@@ -1,29 +1,28 @@
 ---
-- name: Install Pulsar Relay on SURF Research Cloud
+- name: Install Pulsar with RabbitMQ on SURF Research Cloud
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   become: true
   pre_tasks:
-    - name: Validate CO group and installation path
+    - name: Validate component parameters
       ansible.builtin.assert:
         that:
-          - relay_admin_co_group is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-          - relay_install_dir is match('^/[A-Za-z0-9_./-]+$')
-          - relay_welcome_dir is match('^/[A-Za-z0-9_./-]+$')
-          - relay_pair_username is match('^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$')
-          - relay_topic_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
-          - (relay_pair_password | default('', true) | length == 0) or
-            (relay_pair_password is match('^[A-Za-z0-9._~+=@%-]{16,128}$'))
-          - relay_port | string is match('^[0-9]{4,5}$')
-          - _relay_pulsar_root is match('^/[A-Za-z0-9_./-]+$')
+          - rabbitmq_install_dir is match('^/[A-Za-z0-9_./-]+$')
+          - rabbitmq_welcome_dir is match('^/[A-Za-z0-9_./-]+$')
+          - rabbitmq_hostname is match('^[A-Za-z0-9.-]+$')
+          - rabbitmq_vhost is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+          - rabbitmq_pair_username is match('^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$')
+          - rabbitmq_admin_username is match('^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$')
+          - (rabbitmq_pair_password | default('', true) | length == 0) or
+            (rabbitmq_pair_password is match('^[A-Za-z0-9._~-]{16,128}$'))
+          - rabbitmq_amqps_port | string is match('^[0-9]{3,5}$')
+          - pulsar_manager is match('^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$')
+          - (pulsar_amqp_key_prefix | default('', true) | length == 0) or
+            (pulsar_amqp_key_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'))
+          - _pulsar_root is match('^/[A-Za-z0-9_./-]+$')
         fail_msg: >-
-          Check the component parameters: CO group, paths, pair username (3-50 of A-Z a-z 0-9 . _ -),
-          topic prefix, pair password (empty, or 16-128 of A-Z a-z 0-9 . _ ~ + = @ % -),
-          relay port (digits), and relay_pulsar_root (empty, or an absolute path).
-
-    - name: Set workspace user and CO group facts as in the Galaxy component
-      ansible.builtin.include_role:
-        name: uusrc.general.fact_regular_users
-      when: relay_configure_src_proxy | bool
+          Check the component parameters: paths, hostname, vhost, usernames (3-50 of A-Z a-z 0-9 . _ -),
+          pair password (empty, or 16-128 of A-Z a-z 0-9 . _ ~ -), AMQPS port (digits),
+          Pulsar manager and key prefix (A-Z a-z 0-9 . _ -), and pulsar_root (empty, or an absolute path).
 
     - name: Check supported workspace OS
       ansible.builtin.assert:
@@ -35,191 +34,117 @@
     - name: Check SRC nginx prerequisite
       ansible.builtin.stat:
         path: /etc/nginx/app-location-conf.d/authentication.conf
-      register: relay_nginx_prerequisite
-      when: relay_configure_src_proxy | bool
+      register: _rabbitmq_nginx_prerequisite
+      when: rabbitmq_configure_src_proxy | bool
 
-    - name: Require SRC-Nginx before installing the relay
+    - name: Require SRC-Nginx before this component
       ansible.builtin.assert:
-        that: relay_nginx_prerequisite.stat.exists
+        that: _rabbitmq_nginx_prerequisite.stat.exists
         fail_msg: Add SRC-Nginx before this component in the catalog item.
-      when: relay_configure_src_proxy | bool
+      when: rabbitmq_configure_src_proxy | bool
 
   roles:
     - geerlingguy.docker
-    # Galaxy's CVMFS repositories for the co-located Pulsar (reference data and
-    # Singularity images under /cvmfs), with the same role and settings as the
-    # SRC Galaxy component, so both ends of a job see the same paths.
+    # Galaxy's CVMFS repositories (reference data and Singularity images under
+    # /cvmfs), with the same role and settings as the SRC Galaxy component, so
+    # both ends of a job see the same paths.
     - role: galaxyproject.cvmfs
-      when: _relay_pulsar_cvmfs | bool
+      when: _pulsar_cvmfs | bool
 
   tasks:
-    - name: Create component directories
+    - name: Create the deployment directories
       ansible.builtin.file:
-        path: "{{ relay_install_dir }}/{{ item }}"
+        path: "{{ rabbitmq_install_dir }}/{{ item }}"
         state: directory
         owner: root
         group: root
         mode: "0755"
-      loop: ['', files, scripts, relay_src, .policy]
+      loop: ['', scripts]
 
     - name: Copy deployment files
       ansible.builtin.copy:
         src: "{{ item }}"
-        dest: "{{ relay_install_dir }}/{{ item }}"
+        dest: "{{ rabbitmq_install_dir }}/{{ item }}"
         owner: root
         group: root
         mode: "0644"
       loop:
-        - Dockerfile
-        - .dockerignore
         - compose.yml
-        - files/valkey.conf
         - scripts/configure.py
-        - scripts/sync_admins.py
-        - relay_src/__init__.py
-        - relay_src/policy.py
-        - relay_src/pair.py
-        - relay_src/app.py
-      register: relay_deployment_files
 
-    - name: Generate and retain workspace credentials
+    - name: Generate and retain RabbitMQ credentials and configuration
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ relay_install_dir }}/scripts/configure.py"
+          - "{{ rabbitmq_install_dir }}/scripts/configure.py"
           - --directory
-          - "{{ relay_install_dir }}"
-          - --public-url
-          - "{{ relay_public_url }}"
-          - --port
-          - "{{ relay_port | string }}"
+          - "{{ rabbitmq_install_dir }}"
           - --pair-username
-          - "{{ relay_pair_username }}"
+          - "{{ rabbitmq_pair_username }}"
+          - --admin-username
+          - "{{ rabbitmq_admin_username }}"
+          - --vhost
+          - "{{ rabbitmq_vhost }}"
+          - --amqp-port
+          - "{{ rabbitmq_amqp_port | string }}"
+          - --management-port
+          - "{{ rabbitmq_management_port | string }}"
+          - --consumer-timeout-ms
+          - "{{ rabbitmq_consumer_timeout_ms | string }}"
+          - --management-path-prefix
+          - "{{ rabbitmq_management_path if rabbitmq_management_ui | bool else '' }}"
+          - --manager
+          - "{{ pulsar_manager }}"
+          - --amqp-key-prefix
+          - "{{ pulsar_amqp_key_prefix | default('', true) }}"
+          - "{{ '--acknowledge' if pulsar_amqp_acknowledge | bool else '--' }}"
       environment:
-        RELAY_PAIR_PASSWORD: "{{ relay_pair_password | default('', true) }}"
-      register: relay_configuration
-      changed_when: relay_configuration.stdout == 'changed'
+        RABBITMQ_PAIR_PASSWORD: "{{ rabbitmq_pair_password | default('', true) }}"
+      register: _rabbitmq_configuration
+      changed_when: _rabbitmq_configuration.stdout == 'changed'
       no_log: true
 
-    - name: Initialize administrator membership from the SRC CO facts
-      ansible.builtin.copy:
-        content: "{{ {'members': (fact_co_groups | default({})).get(relay_admin_co_group, []) | reject('equalto', '') | list, 'expires_at': (ansible_date_time.epoch | int) + 180} | to_json }}"
-        dest: "{{ relay_install_dir }}/.policy/admins.json"
-        owner: root
-        group: root
-        mode: '0644'
-      when: relay_configure_src_proxy | bool
-      no_log: true
-
-    - name: Refresh CO administrator membership from managed groups
-      ansible.builtin.command:
-        argv: [python3, "{{ relay_install_dir }}/scripts/sync_admins.py", --group, "{{ relay_admin_co_group }}", --directory, "{{ relay_install_dir }}/.policy"]
-      changed_when: false
-
-    - name: Install CO membership refresh service and timer
-      ansible.builtin.template:
-        src: "templates/admin-sync.{{ item }}.j2"
-        dest: "/etc/systemd/system/pulsar-relay-admin-sync.{{ item }}"
-        owner: root
-        group: root
-        mode: '0644'
-      loop: [service, timer]
-
-    - name: Enable periodic CO administrator membership refresh
-      ansible.builtin.systemd:
-        name: pulsar-relay-admin-sync.timer
-        daemon_reload: true
-        enabled: true
-        state: started
-
-    - name: Build and start the persistent relay services
+    - name: Start RabbitMQ
       community.docker.docker_compose_v2:
-        project_src: "{{ relay_install_dir }}"
-        project_name: pulsar-relay
+        project_src: "{{ rabbitmq_install_dir }}"
+        project_name: pulsar-rabbitmq
         state: present
-        build: "{{ 'always' if relay_deployment_files.changed else 'policy' }}"
-        recreate: "{{ 'always' if relay_configuration.changed else 'auto' }}"
+        pull: missing
+        # Definitions (users, vhost, permissions) are imported when the broker starts.
+        recreate: "{{ 'always' if _rabbitmq_configuration.changed else 'auto' }}"
         wait: true
-        wait_timeout: 180
-      no_log: true
+        wait_timeout: 300
+      environment:
+        RABBITMQ_IMAGE: "{{ rabbitmq_image }}"
 
     - name: Read deployment secrets without logging them
       ansible.builtin.slurp:
-        src: "{{ relay_install_dir }}/secrets.json"
-      register: _relay_secrets_file
+        src: "{{ rabbitmq_install_dir }}/secrets.json"
+      register: _rabbitmq_secrets_file
       no_log: true
 
-    - name: Create the welcome page directory
-      ansible.builtin.file:
-        path: "{{ relay_welcome_dir }}"
-        state: directory
-        owner: root
-        group: www-data
-        mode: '0750'
-      when: relay_configure_src_proxy | bool
-
-    - name: Template the SRAM-protected welcome page with connection details
-      ansible.builtin.template:
-        src: templates/welcome.html.j2
-        dest: "{{ relay_welcome_dir }}/index.html"
-        owner: root
-        group: www-data
-        mode: '0640'
-      vars:
-        _relay_pair_password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
-      when: relay_configure_src_proxy | bool
-      no_log: true
-      diff: false
-
-    - name: Configure SRC HTTPS reverse proxy
-      ansible.builtin.include_role:
-        name: uusrc.general.nginx_reverse_proxy
-      when: relay_configure_src_proxy | bool
-
-    - name: Install SRAM-protected management location
-      when: relay_configure_src_proxy | bool
-      block:
-        - name: Configure trusted SRAM identity forwarding
-          ansible.builtin.template:
-            src: templates/admin-location.conf.j2
-            dest: /etc/nginx/app-location-conf.d/pulsar-relay-admin.conf
-            owner: root
-            group: www-data
-            mode: '0640'
-          vars:
-            _relay_proxy_secret: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_SRC_PROXY_SECRET }}"
-          no_log: true
-          diff: false
-
-        - name: Protect nginx configuration as in the Galaxy component
-          ansible.builtin.file:
-            path: /etc/nginx/app-location-conf.d
-            state: directory
-            owner: root
-            group: www-data
-            mode: '0750'
-
-        - name: Validate nginx configuration
-          ansible.builtin.command: nginx -t
-          changed_when: false
-
-        - name: Reload SRAM management configuration
-          ansible.builtin.service:
-            name: nginx
-            state: reloaded
-
-    - name: Check local relay readiness
+    - name: Check that the pair account has its permissions on the Pulsar vhost
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ relay_port }}/ready"
-        status_code: 200
-      register: relay_ready
-      retries: 12
+        url: "http://127.0.0.1:{{ rabbitmq_management_port }}{{ _rabbitmq_api_prefix }}/api/permissions/{{ rabbitmq_vhost | urlencode }}/{{ rabbitmq_pair_username | urlencode }}"
+        url_username: "{{ rabbitmq_admin_username }}"
+        url_password: "{{ (_rabbitmq_secrets_file.content | b64decode | from_json).RABBITMQ_ADMIN_PASSWORD }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+      vars:
+        _rabbitmq_api_prefix: "{{ rabbitmq_management_path if rabbitmq_management_ui | bool else '' }}"
+      register: _rabbitmq_permissions
+      # 404 or a refused connection while the definitions are still being imported.
+      until: _rabbitmq_permissions.status == 200
+      retries: 24
       delay: 5
-      until: relay_ready.status == 200
+      no_log: true
 
-    - name: Install Pulsar on this workspace, connected to the relay
+    - name: Configure the public AMQPS listener and the welcome page
+      ansible.builtin.include_tasks: tasks/nginx.yml
+      when: rabbitmq_configure_src_proxy | bool
+
+    - name: Install Pulsar, consuming from RabbitMQ
       ansible.builtin.include_tasks: tasks/pulsar.yml
-      when: relay_install_pulsar | bool
 
   handlers:
     - name: Restart Pulsar

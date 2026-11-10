@@ -1,12 +1,31 @@
 #!/usr/bin/env python3
-"""Create persistent secrets and Compose settings without third-party packages."""
+"""Create persistent RabbitMQ credentials and configuration without third-party packages.
+
+Writes, next to compose.yml:
+  secrets.json            generated passwords, kept across reruns (0600)
+  .secrets/rabbitmq.conf  broker configuration (mounted read-only)
+  .secrets/definitions.json  vhost, users and permissions imported at every broker start
+  .env                    non-secret Compose settings
+"""
 import argparse
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import secrets
-from urllib.parse import urlsplit
+
+SECRET_NAMES = ("RABBITMQ_PAIR_PASSWORD", "RABBITMQ_ADMIN_PASSWORD")
+# RabbitMQ user and vhost names that are also safe, unencoded, in an amqp:// URL.
+NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{2,49}"
+VHOST_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+# A password chosen in the SRC wizard. Only RFC 3986 unreserved characters, so it
+# goes into an amqp(s):// URL without percent-encoding, and has no commas, colons,
+# quotes or brackets, so it survives the one-line list parameters of the SRC
+# Galaxy component.
+PASSWORD_PATTERN = r"[A-Za-z0-9._~-]{16,128}"
+GENERATED_PATTERN = r"[a-f0-9]{64}"
 
 
 def write_private(path, content):
@@ -22,33 +41,108 @@ def write_private(path, content):
     return True
 
 
-SECRET_NAMES = ("PULSAR_JWT_SECRET_KEY", "PULSAR_VALKEY_PASSWORD", "PULSAR_SRC_PROXY_SECRET",
-                "PULSAR_PAIR_PASSWORD")
-# Matches the relay's UserCreate limits (3-50 characters) without shell or YAML metacharacters.
-PAIR_USERNAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{2,49}"
-# A pair password chosen in the SRC wizard. No quotes, spaces, commas, colons or
-# brackets, so it survives the one-line list parameters of the SRC Galaxy component.
-PAIR_PASSWORD_PATTERN = r"[A-Za-z0-9._~+=@%-]{16,128}"
+def rabbitmq_password_hash(username, password):
+    """RabbitMQ's rabbit_password_hashing_sha256: base64(salt + sha256(salt + password)).
+
+    The 4-byte salt is derived from the credentials so that rerunning produces
+    an identical definitions file and does not restart the broker.
+    """
+    salt = hashlib.sha256(f"pulsar-rabbitmq:{username}:{password}".encode()).digest()[:4]
+    return base64.b64encode(salt + hashlib.sha256(salt + password.encode()).digest()).decode()
 
 
-def configure(directory, public_url, port=8080, pair_username="galaxy-pulsar", pair_password=None):
-    parsed = urlsplit(public_url)
-    local = parsed.hostname in {"localhost", "127.0.0.1"}
-    if (parsed.scheme != "https" and not (local and parsed.scheme == "http")) or not parsed.hostname:
-        raise ValueError("Use an HTTPS public URL, or HTTP localhost for local tests")
-    if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("The public URL must be an origin without credentials or a path")
-    if not re.fullmatch(r"[A-Za-z0-9.-]+", parsed.hostname):
-        raise ValueError("Use a DNS hostname or IPv4 address")
-    # Accessing .port also validates malformed/out-of-range public URL ports.
-    if parsed.port == 0:
-        raise ValueError("Public URL port cannot be zero")
-    if not 1024 <= port <= 65535:
-        raise ValueError("Relay port must be between 1024 and 65535")
-    if not re.fullmatch(PAIR_USERNAME_PATTERN, pair_username or ""):
-        raise ValueError("The pair username must be 3-50 characters of letters, digits, '.', '_' or '-'")
-    if pair_password and not re.fullmatch(PAIR_PASSWORD_PATTERN, pair_password):
-        raise ValueError("The pair password must be 16-128 characters of letters, digits or ._~+=@%-")
+# Queues Pulsar and Galaxy use, named "<key prefix>_<name>" on the "pulsar" direct exchange
+# (pulsar.client.amqp_exchange). Galaxy publishes setup/kill/status and consumes
+# status_update; Pulsar the reverse. Publishers only declare the exchange, so a message
+# sent before the consumer has ever connected would be dropped: declaring the queues
+# here keeps job messages and status updates until the other side connects.
+PULSAR_EXCHANGE = "pulsar"
+PULSAR_QUEUES = ("setup", "kill", "status", "status_update")
+
+
+def pulsar_key_prefix(manager="_default_", amqp_key_prefix=None):
+    """Same rule as PulsarExchange.__key_prefix in Pulsar 0.15."""
+    if amqp_key_prefix:
+        return amqp_key_prefix
+    return "pulsar_" if manager == "_default_" else f"pulsar_{manager}_"
+
+
+def pulsar_queue_names(manager="_default_", amqp_key_prefix=None, acknowledge=False):
+    prefix = pulsar_key_prefix(manager, amqp_key_prefix)
+    names = list(PULSAR_QUEUES) + ([f"{name}_ack" for name in PULSAR_QUEUES] if acknowledge else [])
+    return [f"{prefix}_{name}" for name in names]
+
+
+def definitions(vhost, pair_username, pair_password, admin_username, admin_password, queues=()):
+    algorithm = "rabbit_password_hashing_sha256"
+    users = [
+        {"name": admin_username, "password_hash": rabbitmq_password_hash(admin_username, admin_password),
+         "hashing_algorithm": algorithm, "tags": ["administrator"]},
+        # Galaxy and Pulsar share this account; it has no management tags.
+        {"name": pair_username, "password_hash": rabbitmq_password_hash(pair_username, pair_password),
+         "hashing_algorithm": algorithm, "tags": []},
+    ]
+    everything = {"configure": ".*", "write": ".*", "read": ".*"}
+    return {
+        "users": users,
+        "vhosts": [{"name": vhost}],
+        "permissions": [dict(user=name, vhost=vhost, **everything) for name in (pair_username, admin_username)],
+        # Same properties kombu declares (durable, not auto-deleted, no arguments),
+        # otherwise Pulsar's and Galaxy's own declarations fail with PRECONDITION_FAILED.
+        "exchanges": [{"name": PULSAR_EXCHANGE, "vhost": vhost, "type": "direct", "durable": True,
+                       "auto_delete": False, "internal": False, "arguments": {}}],
+        "queues": [{"name": queue, "vhost": vhost, "durable": True, "auto_delete": False, "arguments": {}}
+                   for queue in queues],
+        "bindings": [{"source": PULSAR_EXCHANGE, "vhost": vhost, "destination": queue, "destination_type": "queue",
+                      "routing_key": queue, "arguments": {}} for queue in queues],
+    }
+
+
+def broker_config(consumer_timeout_ms, management_path_prefix):
+    lines = [
+        "# Generated by scripts/configure.py",
+        "load_definitions = /etc/rabbitmq/definitions.json",
+        # Plain AMQP only on the loopback/Compose network; nginx terminates TLS on 5671.
+        "listeners.tcp.default = 5672",
+        "management.tcp.port = 15672",
+        # Pulsar acknowledges a setup message after it has queued the job; allow
+        # slow staging without RabbitMQ closing the channel (default is 30 minutes).
+        f"consumer_timeout = {consumer_timeout_ms}",
+        "vm_memory_high_watermark.relative = 0.4",
+        "disk_free_limit.absolute = 1GB",
+        "log.console = true",
+        "log.console.level = info",
+    ]
+    if management_path_prefix:
+        lines.append(f"management.path_prefix = {management_path_prefix}")
+    return "\n".join(lines) + "\n"
+
+
+def configure(directory, pair_username="galaxy-pulsar", pair_password=None, admin_username="admin",
+              vhost="pulsar", amqp_port=5672, management_port=15672, consumer_timeout_ms=3600000,
+              management_path_prefix="/rabbitmq", manager="_default_", amqp_key_prefix=None,
+              acknowledge=False):
+    for label, value, pattern in (("pair username", pair_username, NAME_PATTERN),
+                                  ("admin username", admin_username, NAME_PATTERN),
+                                  ("vhost", vhost, VHOST_PATTERN)):
+        if not re.fullmatch(pattern, value or ""):
+            raise ValueError(f"The {label} must be letters, digits, '.', '_' or '-' (see the README)")
+    if pair_username == admin_username:
+        raise ValueError("The pair and admin usernames must differ")
+    if pair_password and not re.fullmatch(PASSWORD_PATTERN, pair_password):
+        raise ValueError("The pair password must be 16-128 characters of letters, digits or ._~-")
+    for label, port in (("AMQP", amqp_port), ("management", management_port)):
+        if not 1024 <= int(port) <= 65535:
+            raise ValueError(f"The {label} port must be between 1024 and 65535")
+    if int(consumer_timeout_ms) < 60000:
+        raise ValueError("consumer_timeout must be at least 60000 ms")
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}", manager or ""):
+        raise ValueError("The Pulsar manager name must be letters, digits, '.', '_' or '-'")
+    if amqp_key_prefix and not re.fullmatch(VHOST_PATTERN, amqp_key_prefix):
+        raise ValueError("The AMQP key prefix must be letters, digits, '.', '_' or '-'")
+    if management_path_prefix and not re.fullmatch(r"(/[A-Za-z0-9_-]+)+", management_path_prefix):
+        raise ValueError("The management path prefix must look like /rabbitmq")
+
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     secret_path = directory / "secrets.json"
@@ -56,64 +150,58 @@ def configure(directory, public_url, port=8080, pair_username="galaxy-pulsar", p
         values = json.loads(secret_path.read_text())
     else:
         values = {name: secrets.token_hex(32) for name in SECRET_NAMES}
-    # Preserve JWT/storage state when upgrading the previous bootstrap-admin
-    # layout, but remove that local administrator credential entirely.
-    legacy_names = {'PULSAR_JWT_SECRET_KEY', 'PULSAR_VALKEY_PASSWORD', 'PULSAR_BOOTSTRAP_ADMIN_PASSWORD'}
-    if isinstance(values, dict) and set(values) == legacy_names:
-        for name in legacy_names:
-            if not isinstance(values[name], str) or not re.fullmatch(r'[a-f0-9]{64}', values[name]):
-                raise ValueError('Invalid legacy deployment credential')
-        values.pop('PULSAR_BOOTSTRAP_ADMIN_PASSWORD')
-        values['PULSAR_SRC_PROXY_SECRET'] = secrets.token_hex(32)
-    # Deployments made before the built-in Galaxy/Pulsar pair account keep
-    # every existing secret and gain only the generated pair password.
-    if isinstance(values, dict) and set(values) == set(SECRET_NAMES) - {'PULSAR_PAIR_PASSWORD'}:
-        values['PULSAR_PAIR_PASSWORD'] = secrets.token_hex(32)
     if not isinstance(values, dict) or set(values) != set(SECRET_NAMES):
-        raise ValueError("secrets.json must contain exactly the four deployment secrets")
+        raise ValueError("secrets.json must contain exactly " + ", ".join(SECRET_NAMES))
     # A password supplied through the SRC wizard replaces the stored one. When
-    # the parameter is left empty, the stored (generated) password is kept.
+    # the parameter is left empty, the stored (generated or chosen) password is kept.
     if pair_password:
-        values['PULSAR_PAIR_PASSWORD'] = pair_password
-    for name in SECRET_NAMES:
-        pattern = PAIR_PASSWORD_PATTERN if name == 'PULSAR_PAIR_PASSWORD' else r"[a-f0-9]{64}"
-        if not isinstance(values.get(name), str) or not re.fullmatch(pattern, values[name]):
-            raise ValueError(f"{name} has an invalid format")
+        values["RABBITMQ_PAIR_PASSWORD"] = pair_password
+    if not re.fullmatch(PASSWORD_PATTERN, str(values["RABBITMQ_PAIR_PASSWORD"])):
+        raise ValueError("RABBITMQ_PAIR_PASSWORD has an invalid format")
+    if not re.fullmatch(GENERATED_PATTERN, str(values["RABBITMQ_ADMIN_PASSWORD"])):
+        raise ValueError("RABBITMQ_ADMIN_PASSWORD has an invalid format")
     changed = write_private(secret_path, json.dumps(values, indent=2) + "\n")
-    private = directory / '.secrets'
+
+    private = directory / ".secrets"
     private.mkdir(mode=0o700, exist_ok=True)
     os.chmod(private, 0o700)
-    relay_config = {key.removeprefix('PULSAR_').lower(): value for key, value in values.items()}
-    # The relay creates this non-admin machine account at startup so a Galaxy
-    # and Pulsar pair can connect without a manual registration step.
-    relay_config['pair_username'] = pair_username
-    # Each service gets only its own file. The host directory is owner-only;
-    # files are readable inside the container by its unprivileged service user.
+    # The host directory is owner-only; the files are world-readable so the
+    # unprivileged rabbitmq user inside the container can read the bind mounts.
     for name, content in {
-        'relay.json': json.dumps(relay_config) + '\n',
-        'valkey.conf': (directory / 'files' / 'valkey.conf').read_text() +
-                       '\nrequirepass ' + values['PULSAR_VALKEY_PASSWORD'] + '\n',
+        "rabbitmq.conf": broker_config(int(consumer_timeout_ms), management_path_prefix),
+        "definitions.json": json.dumps(definitions(vhost, pair_username, values["RABBITMQ_PAIR_PASSWORD"],
+                                                   admin_username, values["RABBITMQ_ADMIN_PASSWORD"],
+                                                   pulsar_queue_names(manager, amqp_key_prefix, acknowledge)),
+                                       indent=2) + "\n",
     }.items():
         path = private / name
         changed = write_private(path, content) or changed
         os.chmod(path, 0o444)
-    settings = dict(RELAY_PORT=str(port))
-    text = "# Generated by scripts/configure.py; keep private.\n"
-    text += "".join(f"{key}={value}\n" for key, value in settings.items())
-    text += "PULSAR_TRUSTED_HOSTS='" + json.dumps([parsed.hostname, "localhost", "127.0.0.1"]) + "'\n"
-    text += "PULSAR_ALLOWED_ORIGINS='" + json.dumps([public_url.rstrip("/")]) + "'\n"
+    text = "# Generated by scripts/configure.py\n"
+    text += f"RABBITMQ_AMQP_PORT={int(amqp_port)}\nRABBITMQ_MANAGEMENT_PORT={int(management_port)}\n"
     return write_private(directory / ".env", text) or changed
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--directory", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--public-url", required=True)
-    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--pair-username", default="galaxy-pulsar",
-                        help="Built-in non-admin relay account shared by one Galaxy/Pulsar pair")
+                        help="RabbitMQ account shared by Galaxy and Pulsar")
+    parser.add_argument("--admin-username", default="admin", help="RabbitMQ management administrator")
+    parser.add_argument("--vhost", default="pulsar")
+    parser.add_argument("--amqp-port", type=int, default=5672, help="Local plain AMQP port (127.0.0.1)")
+    parser.add_argument("--management-port", type=int, default=15672, help="Local management port (127.0.0.1)")
+    parser.add_argument("--consumer-timeout-ms", type=int, default=3600000)
+    parser.add_argument("--management-path-prefix", default="/rabbitmq",
+                        help="URL prefix of the management UI behind nginx; empty for none")
+    parser.add_argument("--manager", default="_default_", help="Pulsar manager name (as on Galaxy's runner)")
+    parser.add_argument("--amqp-key-prefix", default="", help="amqp_key_prefix; empty for Pulsar's default")
+    parser.add_argument("--acknowledge", action="store_true", help="Also declare the amqp_acknowledge queues")
     args = parser.parse_args()
     # Read from the environment rather than argv so the password never shows in the process list.
-    password = os.environ.get("RELAY_PAIR_PASSWORD", "").strip() or None
-    print("changed" if configure(args.directory, args.public_url, args.port, args.pair_username, password)
+    password = os.environ.get("RABBITMQ_PAIR_PASSWORD", "").strip() or None
+    print("changed" if configure(args.directory, args.pair_username, password, args.admin_username, args.vhost,
+                                 args.amqp_port, args.management_port, args.consumer_timeout_ms,
+                                 args.management_path_prefix, args.manager, args.amqp_key_prefix or None,
+                                 args.acknowledge)
           else "unchanged")

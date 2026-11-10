@@ -1,13 +1,21 @@
-# Defaults for SRC component parameters. Secrets are generated on the workspace.
-relay_port: 8080
-relay_admin_co_group: src_co_admin
-relay_pair_username: galaxy-pulsar
+# Defaults for SRC component parameters (strings, as SRC passes them).
+# Secrets are generated on the workspace.
+# Account shared by Galaxy and the Pulsar on this workspace.
+rabbitmq_pair_username: galaxy-pulsar
 # Leave empty to generate a password on the workspace (recommended).
-relay_pair_password: ""
-relay_topic_prefix: src
-# "true" also installs Pulsar on this workspace, connected to this relay.
-relay_install_pulsar: "false"
-# With relay_install_pulsar, mount the Galaxy CVMFS repositories (reference data and
-# Singularity images under /cvmfs) for that Pulsar. "false" leaves CVMFS out.
-relay_pulsar_cvmfs: "true"
-# Add relay_public_url as a component parameter if hostname autodetection is wrong.
+# Otherwise 16-128 of A-Z a-z 0-9 . _ ~ - (safe in an amqps:// URL).
+rabbitmq_pair_password: ""
+rabbitmq_vhost: pulsar
+# Public AMQPS port for Galaxy; also open it in the catalog item.
+rabbitmq_amqps_port: "5671"
+# "false" hides the RabbitMQ management UI at /rabbitmq/.
+rabbitmq_management_ui: "true"
+# Galaxy's runner must use the same manager, key prefix and acknowledgement setting.
+pulsar_manager: _default_
+pulsar_amqp_key_prefix: ""
+pulsar_amqp_acknowledge: "false"
+# Mount the Galaxy CVMFS repositories (reference data and Singularity images).
+pulsar_cvmfs: "true"
+# Empty: /var/lib/pulsar. Set to attached storage for larger data.
+pulsar_root: ""
+# Add rabbitmq_hostname as a component parameter if hostname autodetection is wrong.

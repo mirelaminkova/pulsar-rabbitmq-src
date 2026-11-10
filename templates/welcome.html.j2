@@ -1,10 +1,16 @@
-{% set _relay_welcome_singularity = relay_install_pulsar | bool and relay_pulsar_apptainer | bool %}
-{% set _relay_welcome_cvmfs = _relay_pulsar_cvmfs | bool %}
+{# Values shared with the SRC Galaxy component; keep them in sync with its AMQP parameter. #}
+{% set _name = ansible_hostname | replace('.', '-') | replace('_', '-') %}
+{% set _pw = _rabbitmq_secrets.RABBITMQ_PAIR_PASSWORD %}
+{% set _amqps_url = 'amqps://' ~ rabbitmq_pair_username ~ ':' ~ _pw ~ '@' ~ rabbitmq_hostname ~ ':' ~ rabbitmq_amqps_port ~ '/' ~ rabbitmq_vhost %}
+{% set _singularity = pulsar_apptainer | bool %}
+{% set _cvmfs = _pulsar_cvmfs | bool %}
+{% set _prefix = pulsar_amqp_key_prefix | default('', true) %}
+{% set _ack = pulsar_amqp_acknowledge | bool %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Pulsar Relay Configuration</title>
+  <title>Pulsar with RabbitMQ</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <link rel="stylesheet"
@@ -56,7 +62,7 @@
              alt="Pulsar logo">
       </a>
     </div>
-    <h1 class="brand-title">Pulsar Relay Configuration</h1>
+    <h1 class="brand-title">Pulsar with RabbitMQ</h1>
     <div class="brand-right">
       <a href="https://www.surf.nl/en" target="_blank" rel="noopener">
         <img class="brand-logo"
@@ -67,85 +73,92 @@
   </header>
 
   <main>
-    <p><strong>Auto-generated as part of deployment.</strong> This page is only shown to signed-in members of the collaboration; it contains the credentials that Galaxy and Pulsar use to reach this relay.</p>
+    <p><strong>Auto-generated as part of deployment.</strong> This page is only shown to signed-in members of the collaboration; it contains the credentials Galaxy uses to reach this workspace's message queue.</p>
 
     <section>
       <h2>About</h2>
       <ul>
-        <li><strong>Admins:</strong> {{ (fact_co_groups | default({})).get(relay_admin_co_group, []) | reject('equalto', '') | join(', ') | default('none yet', true) }}</li>
-        <li><strong>Workspace FQDN:</strong> {{ workspace_fqdn | default(ansible_fqdn, true) }}</li>
-        <li><strong>Relay URL:</strong> <code>{{ relay_public_url }}</code></li>
-        <li><strong>Readiness:</strong> <a href="{{ relay_public_url }}/ready">{{ relay_public_url }}/ready</a></li>
-        <li><strong>Management (CO admins, SRAM sign-in):</strong> <a href="{{ relay_public_url }}/admin/docs">{{ relay_public_url }}/admin/docs</a></li>
-        <li><strong>Built-in pair account:</strong> <code>{{ relay_pair_username }}</code> (permissions: read, write)</li>
-        <li><strong>Topic prefix:</strong> <code>{{ relay_topic_prefix }}</code></li>
+        <li><strong>Workspace FQDN:</strong> {{ rabbitmq_hostname }}</li>
+        <li><strong>AMQP URL (without credentials):</strong> <code>{{ _rabbitmq_amqps_url_no_auth }}</code></li>
+        <li><strong>Account:</strong> <code>{{ rabbitmq_pair_username }}</code> on vhost <code>{{ rabbitmq_vhost }}</code></li>
+        <li><strong>Pulsar manager:</strong> <code>{{ pulsar_manager }}</code>{% if _prefix %}, <strong>key prefix:</strong> <code>{{ _prefix }}</code>{% endif %}, <strong>acknowledgements:</strong> <code>{{ _ack | lower }}</code></li>
+        <li><strong>Pulsar:</strong> {{ pulsar_version }}, consuming queue <code>{{ _pulsar_setup_queue }}</code></li>
+{% if rabbitmq_management_ui | bool %}
+        <li><strong>RabbitMQ management:</strong> <a href="https://{{ rabbitmq_hostname }}{{ rabbitmq_management_path }}/">https://{{ rabbitmq_hostname }}{{ rabbitmq_management_path }}/</a> (user <code>{{ rabbitmq_admin_username }}</code>, password below)</li>
+{% endif %}
       </ul>
     </section>
 
     <section>
-      <h2>How the relay connects Galaxy and Pulsar</h2>
-      <p>Unlike the HTTP (REST) Pulsar workspace, Galaxy never talks to Pulsar directly. Both sign in to this relay with the <em>same</em> account and exchange job messages through it. Only files still go straight from Pulsar to Galaxy, so the Pulsar workspace must be able to reach Galaxy's URL.</p>
-<div class="flow">Galaxy ──POST job messages──▶ {{ workspace_fqdn | default(ansible_fqdn, true) }} ◀──long-poll── Pulsar
-                                                                     │
-Galaxy ◀──────────── direct HTTPS for input/output files ────────────┘</div>
-      <p>Three things must match on both sides: the relay URL, the pair account and the topic prefix. The values below already agree with each other.</p>
+      <h2>How Galaxy and Pulsar connect</h2>
+      <p>Galaxy never talks to Pulsar directly. It publishes job messages to RabbitMQ on this workspace over AMQPS (port {{ rabbitmq_amqps_port }}), and Pulsar, running here, consumes them and publishes status updates back. Files go directly from Pulsar to Galaxy over HTTPS, so this workspace must be able to reach Galaxy's URL, and Galaxy must be able to reach port {{ rabbitmq_amqps_port }} here.</p>
+<div class="flow">Galaxy ──AMQPS :{{ rabbitmq_amqps_port }}──▶ RabbitMQ ({{ rabbitmq_hostname }}) ◀──AMQP 127.0.0.1── Pulsar
+                                                                               │
+Galaxy ◀────────────── direct HTTPS for input/output files ────────────────────┘</div>
+      <p>Galaxy and Pulsar must agree on the account, the vhost, the manager name{% if _prefix %}, the key prefix{% endif %} and whether acknowledgements are on. The values below already agree with this Pulsar.</p>
     </section>
 
     <section>
       <h2>Connect a Galaxy workspace</h2>
 
       <h3>Option A: SRC Galaxy component parameters</h3>
-      <p>When creating a <strong>new Galaxy workspace</strong> with a Galaxy component that supports relay mode, paste this <strong>entire line</strong> into the <strong>"Connect existing Pulsar relay"</strong> parameter (<code>src_galaxy_pulsar_relay_configs</code>):</p>
+      <p>When creating a <strong>new Galaxy workspace</strong> with a Galaxy component that supports AMQP Pulsar, paste this <strong>entire line</strong> into the <strong>"Connect existing Pulsar (AMQP)"</strong> parameter (<code>src_galaxy_pulsar_amqp_configs</code>):</p>
       <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('galaxy-relay-param', this)">Copy</button>
-        <pre id="galaxy-relay-param">[{name: {{ ansible_hostname | replace('.', '-') | replace('_', '-') }}, relay_url: {{ relay_public_url }}, relay_username: {{ relay_pair_username }}, relay_password: {{ _relay_pair_password }}, relay_topic_prefix: {{ relay_topic_prefix }}, jobs_directory: {{ relay_galaxy_jobs_directory }}{% if _relay_welcome_singularity %}, singularity_enabled: true{% endif %}}]</pre>
+        <button class="copy-btn" onclick="copyToClipboard('galaxy-amqp-param', this)">Copy</button>
+        <pre id="galaxy-amqp-param">[{name: {{ _name }}, amqp_url: {{ _amqps_url }}, manager: {{ pulsar_manager }}{% if _prefix %}, amqp_key_prefix: {{ _prefix }}{% endif %}{% if _ack %}, amqp_acknowledge: true{% endif %}, jobs_directory: {{ pulsar_staging_dir }}{% if _singularity %}, singularity_enabled: true{% endif %}}]</pre>
       </div>
       <p>And this line into <strong>"Send tools to Pulsar"</strong>, replacing <code>bwa</code> and <code>bowtie2</code> with your tool IDs:</p>
       <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('galaxy-relay-tools', this)">Copy</button>
-        <pre id="galaxy-relay-tools">[{tool_id: bwa, environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}}, {tool_id: bowtie2, environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}}]</pre>
+        <button class="copy-btn" onclick="copyToClipboard('galaxy-amqp-tools', this)">Copy</button>
+        <pre id="galaxy-amqp-tools">[{tool_id: bwa, environment: remote_{{ _name }}}, {tool_id: bowtie2, environment: remote_{{ _name }}}]</pre>
       </div>
       <div class="warning">
         <strong>Important Notes:</strong>
         <ul>
           <li>Copy the <strong>entire line</strong> including all brackets <code>[ ]</code>. Do NOT add extra quotes.</li>
           <li>Keep the Galaxy parameter <em>API exposed</em> enabled: Pulsar fetches inputs and returns outputs through Galaxy's <code>/api/</code>.</li>
-          <li>The older <strong>"Connect existing Pulsar"</strong> parameter is for HTTP (REST) Pulsar only; it cannot use this relay.</li>
-{% if _relay_welcome_singularity %}
-          <li><code>singularity_enabled: true</code> runs each tool in its BioContainer with Apptainer on this workspace. The Galaxy component resolves images with <code>mulled_singularity</code>, so Apptainer pulls them from <code>quay.io</code> on first use{% if _relay_welcome_cvmfs %}; to use the prebuilt images under <code>/cvmfs/singularity.galaxyproject.org</code> instead, configure the environment as in Option B{% endif %}.</li>
+          <li>Galaxy must run a <strong>single job handler</strong> for AMQP Pulsar jobs: RabbitMQ delivers each status update to only one consumer, so a second handler would receive updates for jobs it does not own.</li>
+          <li>The <strong>"Connect existing Pulsar"</strong> (REST) parameter cannot use this workspace.</li>
+{% if _singularity %}
+          <li><code>singularity_enabled: true</code> runs each tool in its BioContainer with Apptainer on this workspace{% if pulsar_docker | bool %}; use <code>docker_enabled: true</code> instead for Docker{% endif %}.</li>
 {% endif %}
         </ul>
       </div>
 
       <h3>Option B: edit the job configuration</h3>
-      <p>For an existing Galaxy (26.0 or newer), merge this into its job configuration, for example <code>/srv/galaxy/config/job_conf.yml</code>. Keep your existing runners, environments and default destination.</p>
+      <p>For an existing Galaxy (23.0 or newer), merge this into its job configuration, for example <code>/srv/galaxy/config/job_conf.yml</code>. Keep your existing runners, environments and default destination.</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('galaxy-job-conf', this)">Copy</button>
         <pre id="galaxy-job-conf">runners:
-  pulsar_relay:
+  pulsar_amqp_{{ _name }}:
     load: galaxy.jobs.runners.pulsar:PulsarMQJobRunner
-    relay_url: {{ relay_public_url }}
-    relay_username: {{ relay_pair_username }}
-    relay_password: {{ _relay_pair_password }}
-    relay_topic_prefix: {{ relay_topic_prefix }}
+    amqp_url: {{ _amqps_url }}
+    # Must match the Pulsar manager on this workspace; it is part of the queue names.
+    manager: {{ pulsar_manager }}
+{% if _prefix %}
+    amqp_key_prefix: {{ _prefix }}
+{% endif %}
+{% if _ack %}
+    amqp_acknowledge: true
+{% endif %}
     # Galaxy's own public URL: Pulsar fetches inputs and returns outputs here.
     galaxy_url: https://GALAXY_WORKSPACE_FQDN
 
 execution:
   environments:
-    remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}:
-      runner: pulsar_relay
+    remote_{{ _name }}:
+      runner: pulsar_amqp_{{ _name }}
       # Pulsar's staging directory (staging_directory in Pulsar's app.yml).
-      jobs_directory: {{ relay_galaxy_jobs_directory }}
-      manager: _default_
+      jobs_directory: {{ pulsar_staging_dir }}
       dependency_resolution: remote
       default_file_action: remote_transfer
-{% if _relay_welcome_singularity %}
+{% if _singularity %}
       # Run tools in BioContainers with Apptainer on the Pulsar workspace.
       singularity_enabled: true
+      singularity_volumes: "$job_directory:ro,$tool_directory:ro,$job_directory/outputs:rw,$working_directory:rw{% if _cvmfs %},/cvmfs:ro{% endif %}"
       container_resolvers:
         - type: explicit_singularity
-{% if _relay_welcome_cvmfs %}
+{% if _cvmfs %}
         # Prebuilt images shared by Galaxy and Pulsar through CVMFS; needs
         # /cvmfs on the Galaxy workspace too (SRC Galaxy parameter src_galaxy_cvmfs).
         - type: cached_mulled_singularity
@@ -153,94 +166,64 @@ execution:
 {% endif %}
         # Fallback: Apptainer pulls the image from quay.io on the Pulsar workspace.
         - type: mulled_singularity
-          auto_install: false
+          auto_install: true
 {% endif %}
 
 tools:
   - id: bwa
-    environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}
+    environment: remote_{{ _name }}
   - id: bowtie2
-    environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}</pre>
+    environment: remote_{{ _name }}</pre>
       </div>
       <ul>
-        <li>Replace <code>GALAXY_WORKSPACE_FQDN</code> with the Galaxy hostname. With the relay runner, Galaxy ignores a <code>url</code> on the environment; its address comes from <code>galaxy_url</code> on the runner.</li>
-        <li>The file contains the pair password: keep it readable by the Galaxy user only. Then restart Galaxy with <code>sudo systemctl restart 'galaxy-*'</code>.</li>
+        <li>Replace <code>GALAXY_WORKSPACE_FQDN</code> with the Galaxy hostname. With a message-queue runner, Galaxy ignores <code>url</code> on the environment; Pulsar learns Galaxy's address from <code>galaxy_url</code>.</li>
+        <li>The file contains the password: keep it readable by the Galaxy user only. Then restart Galaxy with <code>sudo systemctl restart 'galaxy-*'</code>.</li>
+        <li>Galaxy's own <code>amqp_internal_connection</code> (in <code>galaxy.yml</code>) is unrelated to Pulsar; leave it as it is.</li>
       </ul>
     </section>
 
     <section>
-{% if relay_install_pulsar | bool %}
       <h2>Pulsar on this workspace</h2>
-      <p>Pulsar {{ relay_pulsar_version }} is installed here and already connected to this relay as <code>{{ relay_pair_username }}</code> with topic prefix <code>{{ relay_topic_prefix }}</code>. Jobs run directly on this workspace{% if relay_pulsar_docker | bool %}, and tools can use Docker containers{% endif %}{% if relay_pulsar_apptainer | bool %}{% if relay_pulsar_docker | bool %} or{% else %}, and tools can use{% endif %} Singularity containers (Apptainer){% endif %}. Nothing needs to be copied for Pulsar.</p>
+      <p>Pulsar {{ pulsar_version }} is installed here and consumes the <code>{{ rabbitmq_vhost }}</code> vhost as <code>{{ rabbitmq_pair_username }}</code>. Jobs run directly on this workspace{% if pulsar_docker | bool %}, and tools can use Docker containers{% endif %}{% if pulsar_apptainer | bool %}{% if pulsar_docker | bool %} or{% else %}, and tools can use{% endif %} Singularity containers (Apptainer){% endif %}.</p>
       <ul>
-        <li><strong>Staging directory:</strong> <code>{{ relay_pulsar_staging_dir }}</code>, which Galaxy uses as <code>jobs_directory</code></li>
-{% if _relay_welcome_cvmfs %}
-        <li><strong>CVMFS:</strong> the Galaxy project repositories are mounted under <code>/cvmfs</code> (reference data in <code>data.galaxyproject.org</code>, container images in <code>singularity.galaxyproject.org</code>) and bound into every Apptainer container, so Galaxy's tool data tables and CVMFS image paths work in jobs here</li>
+        <li><strong>Staging directory:</strong> <code>{{ pulsar_staging_dir }}</code>, which Galaxy uses as <code>jobs_directory</code></li>
+{% if _cvmfs %}
+        <li><strong>CVMFS:</strong> the Galaxy project repositories are mounted under <code>/cvmfs</code> (reference data in <code>data.galaxyproject.org</code>, container images in <code>singularity.galaxyproject.org</code>) and bound into every Apptainer container</li>
 {% endif %}
-        <li><strong>Configuration:</strong> <code>{{ relay_pulsar_config_dir }}/app.yml</code></li>
+        <li><strong>Configuration:</strong> <code>{{ pulsar_config_dir }}/app.yml</code></li>
         <li><strong>Status:</strong> <code>systemctl status pulsar</code> and <code>journalctl -u pulsar -f</code></li>
       </ul>
-{% else %}
-      <h2>Connect a Pulsar workspace</h2>
-      <p>For an SRC Pulsar workspace whose component supports message queues, set these parameters when creating it:</p>
-      <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('pulsar-src-params', this)">Copy</button>
-        <pre id="pulsar-src-params">src_pulsar_message_queue_url: {{ relay_public_url }}
-src_pulsar_relay_username: {{ relay_pair_username }}
-src_pulsar_relay_password: {{ _relay_pair_password }}
-src_pulsar_relay_topic_prefix: {{ relay_topic_prefix }}</pre>
-      </div>
-      <p>For any other Pulsar, add these lines to its <code>app.yml</code> and restart it. An <code>https://</code> <code>message_queue_url</code> switches Pulsar to relay mode.</p>
-      <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('pulsar-app-yml', this)">Copy</button>
-        <pre id="pulsar-app-yml">message_queue_url: {{ relay_public_url }}
-message_queue_username: {{ relay_pair_username }}
-message_queue_password: {{ _relay_pair_password }}
-relay_topic_prefix: {{ relay_topic_prefix }}</pre>
-      </div>
-      <div class="warning">
-        <strong>Important Notes:</strong>
-        <ul>
-          <li>Pulsar needs <code>pulsar-app</code> 0.15.15 or newer with <code>pulsar-relay-client</code> {{ relay_pulsar_relay_client_version }}, the combination usegalaxy.eu runs against its relay.</li>
-          <li>Use one Pulsar per pair account and topic prefix. Register a second account below for a second pair.</li>
-          <li>Pulsar must be able to open <code>https://GALAXY_WORKSPACE_FQDN/api/</code>; the relay does not carry files.</li>
-        </ul>
-      </div>
-{% endif %}
     </section>
 
-    <section>
-      <h2>Additional Galaxy/Pulsar pairs</h2>
-      <p>CO administrators can create more machine accounts. Open <a href="{{ relay_public_url }}/admin/docs">{{ relay_public_url }}/admin/docs</a> (SRAM sign-in), expand <code>POST /auth/register</code> and submit:</p>
+{% if rabbitmq_management_ui | bool %}
+    <details>
+      <summary>RabbitMQ management login</summary>
+      <p>Open <a href="https://{{ rabbitmq_hostname }}{{ rabbitmq_management_path }}/">{{ rabbitmq_management_path }}/</a> and sign in as <code>{{ rabbitmq_admin_username }}</code> with:</p>
       <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('register-body', this)">Copy</button>
-        <pre id="register-body">{
-  "username": "second-pair",
-  "password": "REPLACE-WITH-A-LONG-RANDOM-PASSWORD",
-  "permissions": ["read", "write"]
-}</pre>
+        <button class="copy-btn" onclick="copyToClipboard('admin-password', this)">Copy</button>
+        <pre id="admin-password">{{ _rabbitmq_secrets.RABBITMQ_ADMIN_PASSWORD }}</pre>
       </div>
-      <p>Give that pair its own <code>relay_topic_prefix</code> on both ends. Topics are namespaced per account, so two accounts cannot see each other's messages even with the same prefix.</p>
-    </section>
+      <p>Under <em>Queues</em>, <code>{{ _pulsar_setup_queue }}</code> should show one consumer (Pulsar), and <code>{{ _pulsar_amqp_key_prefix }}_status_update</code> one consumer per connected Galaxy handler.</p>
+    </details>
+{% endif %}
 
     <details>
-      <summary>Checking and debugging the relay</summary>
-      <h3>From anywhere</h3>
-      <pre>curl {{ relay_public_url }}/ready</pre>
+      <summary>Checking and debugging</summary>
+      <h3>From the Galaxy workspace</h3>
+      <pre>openssl s_client -brief -connect {{ rabbitmq_hostname }}:{{ rabbitmq_amqps_port }} &lt;/dev/null</pre>
       <h3>On this workspace</h3>
-<pre>sudo docker compose -p pulsar-relay --project-directory {{ relay_install_dir }} ps
-sudo docker compose -p pulsar-relay --project-directory {{ relay_install_dir }} logs --tail 100 relay
-systemctl status pulsar-relay-admin-sync.timer</pre>
-      <p>After both sides are configured, <code>GET /api/v1/topics</code> on the management page lists the <code>{{ relay_topic_prefix }}_job_*</code> topics that Galaxy and Pulsar created, and <code>{{ relay_topic_prefix }}_pulsar_capabilities</code> shows that Pulsar connected.</p>
-      <p>Rotating the pair password: edit <code>PULSAR_PAIR_PASSWORD</code> in <code>{{ relay_install_dir }}/secrets.json</code>, rerun the component (or <code>scripts/configure.py</code> and <code>docker compose up -d --force-recreate</code>), then update Galaxy and Pulsar. This page is regenerated when the component reruns.</p>
+<pre>sudo docker compose -p pulsar-rabbitmq --project-directory {{ rabbitmq_install_dir }} ps
+sudo docker compose -p pulsar-rabbitmq --project-directory {{ rabbitmq_install_dir }} exec rabbitmq rabbitmqctl list_queues -p {{ rabbitmq_vhost }} name messages consumers
+journalctl -u pulsar -f</pre>
+      <p>Rotating the password: set a new pair password parameter and rerun the component (or edit <code>RABBITMQ_PAIR_PASSWORD</code> in <code>{{ rabbitmq_install_dir }}/secrets.json</code> and rerun it), then update Galaxy. This page is regenerated when the component reruns.</p>
     </details>
 
     <details>
       <summary>Deployment settings</summary>
       <ul>
-        <li><strong>Install directory:</strong> <code>{{ relay_install_dir }}</code></li>
-        <li><strong>Local relay port:</strong> <code>{{ relay_port }}</code> (bound to 127.0.0.1 only)</li>
-        <li><strong>CO administrator group:</strong> <code>{{ relay_admin_co_group }}</code></li>
+        <li><strong>Install directory:</strong> <code>{{ rabbitmq_install_dir }}</code></li>
+        <li><strong>RabbitMQ image:</strong> <code>{{ rabbitmq_image }}</code></li>
+        <li><strong>Local AMQP / management ports:</strong> <code>{{ rabbitmq_amqp_port }}</code> / <code>{{ rabbitmq_management_port }}</code> (127.0.0.1 only)</li>
         <li><strong>Host:</strong> <code>{{ inventory_hostname }}</code> ({{ ansible_distribution }} {{ ansible_distribution_version }})</li>
       </ul>
     </details>

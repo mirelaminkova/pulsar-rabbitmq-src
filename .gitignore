@@ -1,7 +1,6 @@
 .env
 secrets.json
 .secrets/
-.policy/
 *.tmp
 .venv/
 .test-deps/

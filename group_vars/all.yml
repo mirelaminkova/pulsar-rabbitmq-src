@@ -1,49 +1,72 @@
 ---
-relay_install_dir: /opt/pulsar-relay
-relay_port: 8080
-# Override in SRC component parameters if ansible_fqdn is not the public hostname.
-relay_public_url: "https://{{ workspace_fqdn | default(ansible_fqdn, true) }}"
-relay_admin_co_group: src_co_admin
-relay_configure_src_proxy: true
-# Built-in non-admin relay account shared by one Galaxy/Pulsar pair, and the
-# topic prefix both ends must use. Shown on the SRAM-protected welcome page.
-relay_pair_username: galaxy-pulsar
+# ── RabbitMQ broker ──────────────────────────────────────────────────────────
+rabbitmq_install_dir: /opt/pulsar-rabbitmq
+rabbitmq_image: rabbitmq:4.1-management
+# Public hostname in the amqps:// URL Galaxy uses. It must match the workspace
+# certificate. Override in SRC component parameters if autodetection is wrong.
+rabbitmq_hostname: "{{ workspace_fqdn | default(ansible_fqdn, true) }}"
+# Public AMQPS port (TLS terminated by nginx). Open it in the SRC catalog item.
+rabbitmq_amqps_port: 5671
+# Local plain AMQP and management ports, bound to 127.0.0.1 only.
+rabbitmq_amqp_port: 5672
+rabbitmq_management_port: 15672
+rabbitmq_vhost: pulsar
+# Account shared by Galaxy and the Pulsar on this workspace.
+rabbitmq_pair_username: galaxy-pulsar
 # Optional pair password from the SRC wizard; empty means generated on the workspace.
-relay_pair_password: ""
-relay_topic_prefix: src
-relay_welcome_dir: /srv/static
+rabbitmq_pair_password: ""
+rabbitmq_admin_username: admin
+rabbitmq_consumer_timeout_ms: 3600000
+# Management UI at https://WORKSPACE_HOST/rabbitmq/ (SRAM sign-in, then RabbitMQ login).
+rabbitmq_management_ui: true
+rabbitmq_management_path: /rabbitmq
+# false: skip SRC-Nginx (welcome page, management proxy, AMQPS listener), e.g. for local tests.
+rabbitmq_configure_src_proxy: true
+rabbitmq_welcome_dir: /srv/static
+# SRC-Nginx >= 1.2.0 (acme.sh) keeps the certificate here; older versions used
+# certbot's /etc/letsencrypt/live/<fqdn>/. Same detection as the SRC Galaxy component.
+rabbitmq_acme_cert_dir: "/etc/ssl/acme/{{ rsc_nginx_service_url | default(rabbitmq_hostname, true) }}"
 
-# Optional Pulsar on the same workspace, in relay mode (NEMO-style: pulsar-app
-# plus pulsar-relay-client in a venv, webless). It connects to this relay over
-# 127.0.0.1 with the built-in pair account, so no credentials are copied.
-relay_install_pulsar: false
-relay_pulsar_user: pulsar
+_rabbitmq_amqps_url_no_auth: "amqps://{{ rabbitmq_hostname }}:{{ rabbitmq_amqps_port }}/{{ rabbitmq_vhost }}"
+
+# ── Pulsar (AMQP consumer on this workspace) ─────────────────────────────────
+pulsar_user: pulsar
 # Empty (as SRC passes an unset parameter) means /var/lib/pulsar; set it to
-# attached storage for larger data. Use _relay_pulsar_root, never this directly.
-relay_pulsar_root: ""
-_relay_pulsar_root: "{{ (relay_pulsar_root | default('', true) | string | trim) or '/var/lib/pulsar' }}"
-relay_pulsar_venv: /opt/pulsar/venv
-relay_pulsar_config_dir: /opt/pulsar/config
-relay_pulsar_staging_dir: "{{ _relay_pulsar_root }}/staging"
-relay_pulsar_persistence_dir: "{{ _relay_pulsar_root }}/persisted_data"
-# Versions run by usegalaxy.eu's NEMO endpoint against the relay; keep the
-# client in step with the relay release (v0.2.1 plus fixes in this component).
-relay_pulsar_version: "0.15.15"
-relay_pulsar_relay_client_version: "0.2.1"
-# Let Pulsar run tools in Docker containers (Docker is already installed for
-# the relay). Membership of the docker group is equivalent to root on the host.
-relay_pulsar_docker: true
+# attached storage for larger data. Use _pulsar_root, never this directly.
+pulsar_root: ""
+_pulsar_root: "{{ (pulsar_root | default('', true) | string | trim) or '/var/lib/pulsar' }}"
+pulsar_venv: /opt/pulsar/venv
+pulsar_config_dir: /opt/pulsar/config
+pulsar_staging_dir: "{{ _pulsar_root }}/staging"
+pulsar_persistence_dir: "{{ _pulsar_root }}/persisted_data"
+pulsar_version: "0.15.15"
+# Galaxy and Pulsar must agree on these two values: they make up the queue names
+# (pulsar__setup, pulsar__status_update, ... for the defaults). Empty prefix = Pulsar's default.
+pulsar_manager: _default_
+pulsar_amqp_key_prefix: ""
+# Queue names follow from these (pulsar.client.amqp_exchange); the playbook checks
+# that Pulsar consumes the setup queue.
+_pulsar_amqp_key_prefix: >-
+  {{ pulsar_amqp_key_prefix | default('', true) or
+     ('pulsar_' if pulsar_manager == '_default_' else 'pulsar_' ~ pulsar_manager ~ '_') }}
+_pulsar_setup_queue: "{{ _pulsar_amqp_key_prefix }}_setup"
+# Message acknowledgement must be enabled on both Galaxy (runner) and Pulsar, or on neither.
+pulsar_amqp_acknowledge: false
+# Let Pulsar run tools in Docker containers (Docker is installed for RabbitMQ).
+# Membership of the docker group is equivalent to root on the host.
+pulsar_docker: true
 # Install Apptainer (with its `singularity` command) so Galaxy environments can
-# set singularity_enabled: true on this Pulsar, as the SRC Galaxy component does
-# for its own singularity destination. Unprivileged: no setuid starter.
-relay_pulsar_apptainer: true
-# Mount the Galaxy project's CVMFS repositories on this workspace, as the Galaxy
-# component does with src_galaxy_cvmfs. Jobs then find the same reference data
-# (/cvmfs/data.galaxyproject.org) and Singularity images
-# (/cvmfs/singularity.galaxyproject.org) as Galaxy, so a tool's command line
-# and container image resolve on both sides. Only used with relay_install_pulsar.
-relay_pulsar_cvmfs: true
-_relay_pulsar_cvmfs: "{{ relay_install_pulsar | bool and relay_pulsar_cvmfs | default(true, true) | bool }}"
+# set singularity_enabled: true, as the SRC Galaxy component does. Unprivileged.
+pulsar_apptainer: true
+# Mount the Galaxy project's CVMFS repositories, as the Galaxy component does
+# with src_galaxy_cvmfs, so reference data and Singularity images resolve on both sides.
+pulsar_cvmfs: true
+_pulsar_cvmfs: "{{ pulsar_cvmfs | default(true, true) | bool }}"
+# No Slurm here: jobs run directly on this workspace.
+pulsar_managers: >-
+  {{ {pulsar_manager: {'type': 'queued_python',
+                       'num_concurrent_jobs': [ansible_processor_vcpus | default(1) | int - 1, 1] | max}} }}
+
 # galaxyproject.cvmfs client settings, identical to the SRC Galaxy component.
 cvmfs_role: client
 galaxy_cvmfs_repos_enabled: true
@@ -58,33 +81,23 @@ galaxy_cvmfs_server_urls:
 apptainer_repo_url: https://ppa.launchpadcontent.net/apptainer/ppa/ubuntu
 apptainer_key_url: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf6b0f5193d4f3301ef491ff0afe36534fc6218ae
 apptainer_key_location: /usr/share/keyrings/apptainer.asc
-# No Slurm here: jobs run directly on this workspace.
-relay_pulsar_managers:
-  _default_:
-    type: queued_python
-    num_concurrent_jobs: "{{ [ansible_processor_vcpus | default(1) | int - 1, 1] | max }}"
-# Staging directory Galaxy must use (jobs_directory); the welcome page shows it.
-relay_galaxy_jobs_directory: "{{ relay_pulsar_staging_dir if relay_install_pulsar | bool else '/mnt/pulsar/files/staging' }}"
+
+# ── Docker and nginx ─────────────────────────────────────────────────────────
 docker_install_compose_plugin: true
 docker_install_compose: false
-nginx_reverse_proxy_locations:
-  # Welcome page with connection details, as in the SRC Pulsar component.
-  # The relay itself serves nothing at exactly "/" (404), so only this exact
-  # match is taken away from it; every other path still reaches the relay.
-  - name: pulsar-relay-welcome
-    location: '= /'
-    auth: sram
-    root: "{{ relay_welcome_dir }}/"
-    try_files: $uri/index.html =404
-  - name: pulsar-relay
-    location: /
-    proxy_pass: "http://127.0.0.1:{{ relay_port }}"
-    auth: noauth
-    proxy_set_header:
-      X-SRC-User: '""'
-      X-SRC-Proxy-Secret: '""'
-    proxy_http_version: "1.1"
-    proxy_buffering: "off"
-    proxy_read_timeout: "300"
-    proxy_send_timeout: "300"
-    client_max_body_size: "1m"
+nginx_reverse_proxy_locations: >-
+  {{ [_rabbitmq_welcome_location] + ([_rabbitmq_management_location] if rabbitmq_management_ui | bool else []) }}
+_rabbitmq_welcome_location:
+  name: pulsar-rabbitmq-welcome
+  location: '= /'
+  auth: sram
+  root: "{{ rabbitmq_welcome_dir }}/"
+  try_files: $uri/index.html =404
+_rabbitmq_management_location:
+  name: pulsar-rabbitmq-management
+  location: "{{ rabbitmq_management_path }}/"
+  # No URI part: nginx passes the original (still percent-encoded) path, which
+  # the management API needs for vhost names, and RabbitMQ strips the prefix itself.
+  proxy_pass: "http://127.0.0.1:{{ rabbitmq_management_port }}"
+  auth: sram
+  proxy_http_version: "1.1"

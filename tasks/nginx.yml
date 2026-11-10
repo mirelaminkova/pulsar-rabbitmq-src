@@ -1,0 +1,125 @@
+---
+# Public AMQPS for Galaxy: nginx terminates TLS with the workspace certificate
+# that SRC-Nginx already obtains and renews, and forwards plain AMQP to RabbitMQ
+# on 127.0.0.1. Renewals reload nginx, so RabbitMQ needs no certificate handling.
+- name: Install the nginx stream module
+  ansible.builtin.apt:
+    name: libnginx-mod-stream
+    state: present
+    update_cache: true
+
+- name: Check for the acme.sh certificate (SRC-Nginx >= 1.2.0)
+  ansible.builtin.stat:
+    path: "{{ rabbitmq_acme_cert_dir }}/fullchain.pem"
+  register: _rabbitmq_acme_cert
+
+- name: Select the workspace certificate as the SRC Galaxy component does
+  ansible.builtin.set_fact:
+    _rabbitmq_tls_cert: >-
+      {{ _rabbitmq_acme_cert.stat.exists | ternary(rabbitmq_acme_cert_dir ~ '/fullchain.pem',
+         '/etc/letsencrypt/live/' ~ rabbitmq_hostname ~ '/fullchain.pem') }}
+    _rabbitmq_tls_key: >-
+      {{ _rabbitmq_acme_cert.stat.exists | ternary(rabbitmq_acme_cert_dir ~ '/key.pem',
+         '/etc/letsencrypt/live/' ~ rabbitmq_hostname ~ '/privkey.pem') }}
+
+- name: Require the workspace certificate
+  ansible.builtin.stat:
+    path: "{{ _rabbitmq_tls_cert }}"
+  register: _rabbitmq_tls_cert_stat
+  failed_when: not _rabbitmq_tls_cert_stat.stat.exists
+
+- name: Create the nginx stream configuration directory
+  ansible.builtin.file:
+    path: /etc/nginx/stream-conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure the AMQPS listener
+  ansible.builtin.template:
+    src: templates/amqps-stream.conf.j2
+    dest: /etc/nginx/stream-conf.d/pulsar-rabbitmq.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+# stream {} must sit at the top level of nginx.conf, next to http {}.
+- name: Include the stream configuration from nginx.conf
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/nginx.conf
+    line: include /etc/nginx/stream-conf.d/*.conf;
+    insertafter: EOF
+
+- name: Allow AMQPS through ufw when it is active
+  ansible.builtin.shell: |
+    set -e
+    if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+      ufw allow {{ rabbitmq_amqps_port }}/tcp >/dev/null
+      echo changed
+    fi
+  args:
+    executable: /bin/bash
+  register: _rabbitmq_ufw
+  changed_when: "'changed' in _rabbitmq_ufw.stdout"
+
+- name: Create the welcome page directory
+  ansible.builtin.file:
+    path: "{{ rabbitmq_welcome_dir }}"
+    state: directory
+    owner: root
+    group: www-data
+    mode: '0750'
+
+- name: Template the SRAM-protected welcome page with connection details
+  ansible.builtin.template:
+    src: templates/welcome.html.j2
+    dest: "{{ rabbitmq_welcome_dir }}/index.html"
+    owner: root
+    group: www-data
+    mode: '0640'
+  vars:
+    _rabbitmq_secrets: "{{ _rabbitmq_secrets_file.content | b64decode | from_json }}"
+  no_log: true
+  diff: false
+
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+# Writes the welcome and management locations and restarts nginx.
+- name: Configure SRC HTTPS locations
+  ansible.builtin.include_role:
+    name: uusrc.general.nginx_reverse_proxy
+
+- name: Remove the management location when the UI is disabled
+  ansible.builtin.file:
+    path: /etc/nginx/app-location-conf.d/pulsar-rabbitmq-management.conf
+    state: absent
+  when: not rabbitmq_management_ui | bool
+  register: _rabbitmq_mgmt_removed
+
+- name: Protect nginx configuration as in the Galaxy component
+  ansible.builtin.file:
+    path: /etc/nginx/app-location-conf.d
+    state: directory
+    owner: root
+    group: www-data
+    mode: '0750'
+
+- name: Reload nginx after removing the management location
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+  when: _rabbitmq_mgmt_removed is changed
+
+- name: Check that AMQPS answers with the workspace certificate
+  ansible.builtin.command:
+    argv: [openssl, s_client, -brief, -connect, "127.0.0.1:{{ rabbitmq_amqps_port }}",
+           -servername, "{{ rabbitmq_hostname }}", -verify_return_error, -verify_hostname, "{{ rabbitmq_hostname }}"]
+    stdin: ""
+  register: _rabbitmq_tls_check
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: _rabbitmq_tls_check.rc == 0

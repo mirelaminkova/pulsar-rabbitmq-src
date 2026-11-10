@@ -1,6 +1,6 @@
 ---
-# Pulsar in relay mode on the relay workspace itself, modelled on
-# usegalaxy-eu/pulsar-nemo-login-role, with systemd instead of supervisord.
+# Pulsar in message-queue mode: it consumes job messages from RabbitMQ on this
+# workspace over 127.0.0.1 with the pair account, so no credentials are copied.
 - name: Install Python venv support for Pulsar
   ansible.builtin.apt:
     name: [python3-venv, python3-dev, build-essential]
@@ -9,12 +9,12 @@
 
 - name: Create the Pulsar system user
   ansible.builtin.user:
-    name: "{{ relay_pulsar_user }}"
+    name: "{{ pulsar_user }}"
     system: true
-    home: "{{ _relay_pulsar_root }}"
+    home: "{{ _pulsar_root }}"
     create_home: false
     shell: /usr/sbin/nologin
-    groups: "{{ ['docker'] if relay_pulsar_docker | bool else omit }}"
+    groups: "{{ ['docker'] if pulsar_docker | bool else omit }}"
     append: true
 
 - name: Create Pulsar directories
@@ -25,34 +25,34 @@
     group: "{{ item.owner }}"
     mode: "{{ item.mode }}"
   loop:
-    - {path: "{{ relay_pulsar_venv | dirname }}", owner: root, mode: '0755'}
-    - {path: "{{ relay_pulsar_config_dir }}", owner: root, mode: '0755'}
-    - {path: "{{ _relay_pulsar_root }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
-    - {path: "{{ relay_pulsar_staging_dir }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
-    - {path: "{{ relay_pulsar_persistence_dir }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
+    - {path: "{{ pulsar_venv | dirname }}", owner: root, mode: '0755'}
+    - {path: "{{ pulsar_config_dir }}", owner: root, mode: '0755'}
+    - {path: "{{ _pulsar_root }}", owner: "{{ pulsar_user }}", mode: '0750'}
+    - {path: "{{ pulsar_staging_dir }}", owner: "{{ pulsar_user }}", mode: '0750'}
+    - {path: "{{ pulsar_persistence_dir }}", owner: "{{ pulsar_user }}", mode: '0750'}
 
 # No `creates:`, so a version change in group_vars upgrades the venv.
-- name: Install pulsar-app and the relay client into the venv
+# The amqp extra installs kombu, which Pulsar needs for amqp:// message queues.
+- name: Install pulsar-app with AMQP support into the venv
   ansible.builtin.pip:
     name:
-      - "pulsar-app=={{ relay_pulsar_version }}"
-      - "pulsar-relay-client=={{ relay_pulsar_relay_client_version }}"
+      - "pulsar-app[amqp]=={{ pulsar_version }}"
       - psutil
-    virtualenv: "{{ relay_pulsar_venv }}"
+    virtualenv: "{{ pulsar_venv }}"
     # Absolute path: SRC runs Ansible through `uv run`, whose own python3 may
     # come first on PATH and is not usable by the pulsar system user.
     virtualenv_command: /usr/bin/python3 -m venv
   notify: Restart Pulsar
 
-- name: Write Pulsar's app.yml with the relay connection
+- name: Write Pulsar's app.yml with the RabbitMQ connection
   ansible.builtin.template:
     src: templates/pulsar-app.yml.j2
-    dest: "{{ relay_pulsar_config_dir }}/app.yml"
+    dest: "{{ pulsar_config_dir }}/app.yml"
     owner: root
-    group: "{{ relay_pulsar_user }}"
+    group: "{{ pulsar_user }}"
     mode: '0640'
   vars:
-    _relay_pair_password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
+    _rabbitmq_pair_password: "{{ (_rabbitmq_secrets_file.content | b64decode | from_json).RABBITMQ_PAIR_PASSWORD }}"
   no_log: true
   diff: false
   notify: Restart Pulsar
@@ -60,7 +60,7 @@
 - name: Write Pulsar's logging configuration
   ansible.builtin.copy:
     src: templates/pulsar-server.ini
-    dest: "{{ relay_pulsar_config_dir }}/server.ini"
+    dest: "{{ pulsar_config_dir }}/server.ini"
     owner: root
     group: root
     mode: '0644'
@@ -68,7 +68,7 @@
 
 - name: Write Pulsar's job metrics configuration
   ansible.builtin.copy:
-    dest: "{{ relay_pulsar_config_dir }}/job_metrics_conf.xml"
+    dest: "{{ pulsar_config_dir }}/job_metrics_conf.xml"
     owner: root
     group: root
     mode: '0644'
@@ -84,19 +84,19 @@
 
 - name: Install Apptainer for Singularity-enabled Galaxy environments
   ansible.builtin.include_tasks: tasks/apptainer.yml
-  when: relay_pulsar_apptainer | bool
+  when: pulsar_apptainer | bool
 
 # autofs mounts a repository on first access; this proves the client works
 # (keys, stratum 1 reachable) before Galaxy's first job depends on it.
 - name: Check that the Galaxy CVMFS repositories mount
   ansible.builtin.stat:
     path: "{{ item }}"
-  register: _relay_cvmfs_repositories
-  failed_when: not _relay_cvmfs_repositories.stat.exists
+  register: _pulsar_cvmfs_repositories
+  failed_when: not _pulsar_cvmfs_repositories.stat.exists
   loop:
     - /cvmfs/data.galaxyproject.org/managed/location/tool_data_table_conf.xml
     - /cvmfs/singularity.galaxyproject.org/all
-  when: _relay_pulsar_cvmfs | bool
+  when: _pulsar_cvmfs | bool
 
 - name: Install the Pulsar systemd unit
   ansible.builtin.template:
@@ -117,35 +117,22 @@
 - name: Apply pending Pulsar restarts before checking the connection
   ansible.builtin.meta: flush_handlers
 
-- name: Sign in to the relay with the pair account
+# Pulsar declares and consumes <prefix>_setup, _kill and _status on the "pulsar"
+# exchange when it binds to RabbitMQ; a consumer on the setup queue proves that
+# Pulsar logged in with the pair account and is waiting for Galaxy's jobs.
+- name: Wait until Pulsar consumes its setup queue
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ relay_port }}/auth/login"
-    method: POST
-    body_format: form-urlencoded
-    body:
-      username: "{{ relay_pair_username }}"
-      password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
-    status_code: 200
-  register: _relay_pair_login
-  no_log: true
-
-# Pulsar 0.15.15 publishes a capability snapshot to "<prefix>_pulsar_capabilities"
-# when it binds to the relay, so its presence proves Pulsar reached the relay.
-- name: Wait until Pulsar has connected to the relay
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ relay_port }}/api/v1/topics"
-    headers:
-      Authorization: "Bearer {{ _relay_pair_login.json.access_token }}"
-    return_content: true
-  register: _relay_topics
+    url: "http://127.0.0.1:{{ rabbitmq_management_port }}{{ _api_prefix }}/api/queues/{{ rabbitmq_vhost | urlencode }}/{{ _pulsar_setup_queue | urlencode }}"
+    url_username: "{{ rabbitmq_admin_username }}"
+    url_password: "{{ (_rabbitmq_secrets_file.content | b64decode | from_json).RABBITMQ_ADMIN_PASSWORD }}"
+    force_basic_auth: true
+    status_code: [200, 404]
   vars:
-    _first_manager: "{{ relay_pulsar_managers | list | first }}"
-    _capabilities_topic: >-
-      {{ relay_topic_prefix ~ '_pulsar_capabilities' ~
-         ('' if _first_manager == '_default_' else '_' ~ _first_manager) }}
+    _api_prefix: "{{ rabbitmq_management_path if rabbitmq_management_ui | bool else '' }}"
+  register: _pulsar_setup_queue_state
   until: >-
-    _capabilities_topic in
-    ((_relay_topics.json | default([])) | map(attribute='topic_name') | list)
+    _pulsar_setup_queue_state.status == 200 and
+    (_pulsar_setup_queue_state.json.consumers | default(0) | int) > 0
   retries: 24
   delay: 5
   no_log: true

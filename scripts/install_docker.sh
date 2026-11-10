@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Standalone host installation; does not invoke Ansible or start the relay.
+# Standalone host installation; does not invoke Ansible or start RabbitMQ.
 # https://docs.docker.com/engine/install/ubuntu/
 set -euo pipefail
 

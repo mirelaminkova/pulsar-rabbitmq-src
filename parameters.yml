@@ -20,3 +20,5 @@ pulsar_cvmfs: "true"
 pulsar_apptainer: "true"
 # "true" installs Docker and adds the pulsar user to the docker group (root-equivalent).
 pulsar_docker: "false"
+# "slurm" runs jobs through Slurm (DRMAA) on this workspace; "local" in Pulsar itself.
+pulsar_job_runner: slurm

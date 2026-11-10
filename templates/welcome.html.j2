@@ -74,7 +74,11 @@
         <li><strong>Workspace FQDN:</strong> {{ (workspace_fqdn | default(ansible_fqdn, true)) | e }}</li>
         <li><strong>Galaxy broker:</strong> <code>amqps://{{ a.galaxy_fqdn | e }}:{{ a.port | e }}</code>, RabbitMQ user <code>{{ a.name | e }}</code>, vhost <code>{{ a.vhost | e }}</code></li>
         <li><strong>TLS:</strong> Galaxy's certificate and its hostname <code>{{ a.galaxy_fqdn | e }}</code> are verified against <code>{{ pulsar_amqp_ca_certs | e }}</code></li>
-        <li><strong>Manager:</strong> <code>{{ a.manager | e }}</code>, {{ pulsar_num_concurrent_jobs | e }} concurrent jobs on this workspace</li>
+{% if _pulsar_slurm | bool %}
+        <li><strong>Manager:</strong> <code>{{ a.manager | e }}</code>; jobs run through Slurm on this workspace (Pulsar's <code>queued_drmaa</code> manager), which has {{ _pulsar_slurm_cpus | e }} CPUs and {{ _pulsar_slurm_memory_mb | e }} MB for jobs</li>
+{% else %}
+        <li><strong>Manager:</strong> <code>{{ a.manager | e }}</code>; Pulsar runs {{ pulsar_num_concurrent_jobs | e }} concurrent jobs on this workspace itself (<code>queued_python</code>)</li>
+{% endif %}
         <li><strong>Staging directory:</strong> <code>{{ a.jobs_directory | e }}</code> (Galaxy's <code>jobs_directory</code>)</li>
         <li><strong>Containers:</strong> {{ 'Docker' if a.docker_enabled else 'no Docker' }}, {{ 'Apptainer (singularity)' if a.singularity_enabled else 'no Apptainer' }}{{ ', CVMFS under /cvmfs' if _pulsar_cvmfs | bool else '' }}</li>
       </ul>
@@ -116,6 +120,9 @@ Pulsar ──────────── HTTPS for input/output files ──�
       <ul>
         <li><strong>Configuration:</strong> <code>{{ pulsar_config_dir | e }}/app.yml</code></li>
         <li><strong>Status:</strong> <code>systemctl status pulsar</code> and <code>journalctl -u pulsar -f</code></li>
+{% if _pulsar_slurm | bool %}
+        <li><strong>Jobs:</strong> Slurm runs them as user <code>{{ pulsar_user | e }}</code> in partition <code>pulsar</code> on node <code>localhost</code> (this workspace). <code>squeue</code> lists queued and running jobs, <code>scontrol show job &lt;id&gt;</code> shows one (also for four hours after it ended), <code>sinfo</code> the node's state and <code>scancel &lt;id&gt;</code> cancels one{% if a.docker_enabled %} (the epilog <code>{{ pulsar_slurm_epilog | e }}</code> then stops its Docker container){% endif %}. Slurm accounting is off, so there is no <code>sacct</code>; Pulsar's log has every job. Logs: <code>/var/log/slurm/</code>. Jobs run outside the <code>pulsar</code> unit's sandboxing; switching <code>pulsar_job_runner</code> while jobs are active loses them</li>
+{% endif %}
         <li><strong>Connection check:</strong> <code>sudo {{ pulsar_venv | e }}/bin/python {{ pulsar_check_script | e }} {{ pulsar_config_dir | e }}/app.yml</code></li>
 {% if _pulsar_cvmfs | bool %}
         <li><strong>CVMFS:</strong> the Galaxy project repositories are mounted under <code>/cvmfs</code>{% if a.singularity_enabled %} and bound into every Apptainer container{% endif %}, so Galaxy's tool data tables work in jobs here. Container images are not taken from CVMFS: Galaxy's resolvers point Apptainer at <code>quay.io</code>, which pulls each image on first use (outbound HTTPS needed)</li>

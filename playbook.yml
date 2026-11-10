@@ -36,6 +36,8 @@
     # Docker Engine for docker_enabled Galaxy environments.
     - role: geerlingguy.docker
       when: _pulsar_amqp.docker_enabled
+      # CI's live Slurm check uses the runner's own Docker.
+      tags: [docker-install]
     # Galaxy's CVMFS repositories (reference data under /cvmfs), with the same role
     # and settings as the SRC Galaxy component.
     - role: galaxyproject.cvmfs
@@ -67,9 +69,20 @@
           ansible.builtin.include_role:
             name: uusrc.general.nginx_reverse_proxy
 
+    # Before Pulsar, whose queued_drmaa manager needs Slurm and its DRMAA library.
+    - name: Run Pulsar's jobs through Slurm on this workspace
+      ansible.builtin.include_tasks: tasks/slurm.yml
+      when: _pulsar_slurm | bool
+
     # After the welcome page, so its Galaxy entry is available when the broker check fails.
     - name: Install Pulsar and connect it to Galaxy's RabbitMQ
       ansible.builtin.include_tasks: tasks/pulsar.yml
+
+    # After Pulsar has switched to queued_python. Switch without active jobs: Pulsar
+    # cannot move them between managers, and Galaxy would see them as lost.
+    - name: Stop Slurm when Pulsar runs jobs itself
+      ansible.builtin.include_tasks: tasks/slurm-off.yml
+      when: not _pulsar_slurm | bool
 
   handlers:
     - name: Restart Pulsar

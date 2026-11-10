@@ -22,10 +22,13 @@ FACTS = {
     "ansible_fqdn": "pulsar.example.org",
     "ansible_hostname": "pulsar",
     "ansible_processor_vcpus": 4,
+    "ansible_memtotal_mb": 16000,
     "ansible_distribution": "Ubuntu",
     "ansible_distribution_version": "24.04",
     "inventory_hostname": "localhost",
     "workspace_fqdn": "pulsar.example.org",
+    # Ansible's placeholder for a left-out module argument (always defined).
+    "omit": "__omit_place_holder__test",
 }
 
 PASSWORD = "Secret.Pass_word~123"  # noqa: S105 - test value
@@ -38,6 +41,7 @@ PARAMS = {
     "pulsar_manager": "_default_",
     "pulsar_staging_dir": "/mnt/pulsar/files/staging",
     "pulsar_cvmfs": "true",
+    "pulsar_job_runner": "slurm",
 }
 
 
@@ -74,3 +78,19 @@ def render_yaml(template, **params):
 
 def load_yaml(path):
     return yaml.safe_load((REPO / path).read_text())
+
+
+def task_list(path):
+    """All tasks of a task file or play section, including those inside blocks."""
+    tasks = load_yaml(path) if isinstance(path, str) else path
+    return [t for task in tasks or [] for t in [task, *task.get("block", [])]]
+
+
+def the_play():
+    [play] = load_yaml("playbook.yml")
+    return play
+
+
+def named(tasks, name):
+    [task] = [t for t in tasks if t.get("name") == name]
+    return task

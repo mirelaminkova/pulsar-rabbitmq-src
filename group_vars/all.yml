@@ -27,6 +27,10 @@ pulsar_apptainer: true
 # without Apptainer). Off by default: the pulsar user joins the docker group,
 # which is equivalent to root on this workspace.
 pulsar_docker: false
+# Where Pulsar runs Galaxy's jobs: "slurm" submits them through DRMAA to a
+# single-node Slurm on this workspace (Pulsar manager type queued_drmaa); "local"
+# runs them in Pulsar itself (queued_python). Galaxy sees no difference.
+pulsar_job_runner: slurm
 
 # --- Derived settings; use these, never the parameters directly ---------------
 _pulsar_amqp: >-
@@ -34,10 +38,11 @@ _pulsar_amqp: >-
       'name': pulsar_amqp_name, 'password': pulsar_amqp_password,
       'manager': pulsar_manager, 'jobs_directory': pulsar_staging_dir,
       'docker_enabled': pulsar_docker, 'singularity_enabled': pulsar_apptainer,
-      'cvmfs': pulsar_cvmfs}
+      'cvmfs': pulsar_cvmfs, 'job_runner': pulsar_job_runner}
      | pulsar_amqp_settings }}
 _pulsar_amqp_errors: "{{ _pulsar_amqp | pulsar_amqp_errors }}"
 _pulsar_cvmfs: "{{ _pulsar_amqp.cvmfs }}"
+_pulsar_slurm: "{{ _pulsar_amqp.job_runner == 'slurm' }}"
 
 # --- Pulsar ------------------------------------------------------------------
 pulsar_user: pulsar
@@ -53,8 +58,65 @@ pulsar_version: "0.15.15"
 # Ubuntu's CA bundle: Galaxy's certificate (SRC-Nginx, Let's Encrypt or ZeroSSL)
 # is verified against it, together with the hostname pulsar_galaxy_fqdn.
 pulsar_amqp_ca_certs: /etc/ssl/certs/ca-certificates.crt
-# Jobs run on this workspace (no cluster), with the manager pulsar_manager.
+# With pulsar_job_runner local: Pulsar runs this many jobs at once itself.
 pulsar_num_concurrent_jobs: "{{ [ansible_processor_vcpus | default(1) | int - 1, 1] | max }}"
+# Python DRMAA binding in Pulsar's venv (installed for both runners) and the
+# libdrmaa of slurm-drmaa1 it loads, through the unit's environment.
+pulsar_drmaa_version: "0.7.9"
+pulsar_drmaa_library_path: /usr/lib/slurm-drmaa/lib/libdrmaa.so.1
+# Ubuntu has no slurm-drmaa since 16.04: the Galaxy project's PPA (natefoo), which
+# galaxyproject.repos also adds, has it for 22.04 and 24.04.
+slurm_drmaa_repo_url: https://ppa.launchpadcontent.net/natefoo/slurm-drmaa/ubuntu
+slurm_drmaa_key_location: /usr/share/keyrings/slurm-drmaa.asc
+
+# --- Slurm (pulsar_job_runner: slurm), with galaxyproject.slurm ------------------
+# One node: this workspace is controller and compute node, so no shared
+# filesystem is needed and munge's own random key (generated when the package is
+# installed) is the only one; none is shipped. Jobs run as the pulsar user.
+slurm_roles: [controller, exec]
+# Memory Slurm does not hand out to jobs, for the OS, Pulsar and its broker
+# connection. Slurm schedules by it but does not enforce it (no cgroups).
+# At least 1 GiB or a tenth, but never more than half of the workspace's memory.
+pulsar_slurm_reserved_memory_mb: "{{ [1024, (ansible_memtotal_mb | int) // 10] | max }}"
+_pulsar_slurm_memory_mb: >-
+  {{ [(ansible_memtotal_mb | int) - (pulsar_slurm_reserved_memory_mb | int),
+      (ansible_memtotal_mb | int) - (ansible_memtotal_mb | int) // 2] | max }}
+_pulsar_slurm_cpus: "{{ ansible_processor_vcpus | default(1) | int }}"
+# slurmd falls back to the NodeName "localhost" when none matches the hostname,
+# so the node does not depend on SRC's hostname.
+slurm_nodes:
+  - name: localhost
+    CPUs: "{{ _pulsar_slurm_cpus }}"
+    RealMemory: "{{ _pulsar_slurm_memory_mb }}"
+    State: UNKNOWN
+slurm_partitions:
+  - name: pulsar
+    Default: true
+    Nodes: localhost
+    MaxTime: INFINITE
+    State: UP
+# In the role's slurm_config_dir (/etc/slurm on Ubuntu 22.04 and 24.04).
+pulsar_slurm_epilog: /etc/slurm/epilog.sh
+# sinfo states in which the node starts jobs; the deployment waits for one.
+_pulsar_slurm_ready_states: [idle, mixed, allocated, completing, planned]
+slurm_config:
+  SlurmctldHost: localhost
+  # Jobs share the node by CPU and memory; Ubuntu 22.04's Slurm 21.08 would
+  # otherwise give each job the whole node (select/linear). A job without a
+  # memory request gets its CPU's share, so every CPU can run a job.
+  SelectType: select/cons_tres
+  SelectTypeParameters: CR_CPU_Memory
+  DefMemPerCPU: "{{ (_pulsar_slurm_memory_mb | int) // (_pulsar_slurm_cpus | int) }}"
+  # Back in service by itself after a reboot or a slurmd restart.
+  ReturnToService: 2
+  # Without accounting, Slurm forgets a finished job after MinJobAge: four hours, so
+  # that Pulsar still gets its state after a restart. More would let the default
+  # MaxJobCount (10000 jobs, finished ones included) refuse new jobs on a busy day.
+  MinJobAge: 14400
+  # Cancelling a job kills its processes, not a Docker container it started
+  # (that runs under dockerd); the epilog does. files/epilog.sh.
+  Epilog: "{{ pulsar_slurm_epilog if _pulsar_amqp.docker_enabled else omit }}"
+  PrologEpilogTimeout: 90
 
 # galaxyproject.cvmfs client settings, identical to the SRC Galaxy component.
 cvmfs_role: client
@@ -68,7 +130,6 @@ galaxy_cvmfs_server_urls:
       - "http://cvmfs1-psu0.galaxyproject.org/cvmfs/@fqrn@"
 # Apptainer apt repository, as in the SRC Galaxy component.
 apptainer_repo_url: https://ppa.launchpadcontent.net/apptainer/ppa/ubuntu
-apptainer_key_url: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf6b0f5193d4f3301ef491ff0afe36534fc6218ae
 apptainer_key_location: /usr/share/keyrings/apptainer.asc
 docker_install_compose_plugin: false
 docker_install_compose: false

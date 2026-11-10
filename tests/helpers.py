@@ -28,7 +28,7 @@ FACTS = {
     "workspace_fqdn": "pulsar.example.org",
 }
 
-PASSWORD = "Secret.Pass_word~123"
+PASSWORD = "Secret.Pass_word~123"  # noqa: S105 - test value
 # Component parameters as SRC passes them: strings, empty when unset.
 PARAMS = {
     "pulsar_galaxy_fqdn": "galaxy.example.org",
@@ -53,7 +53,7 @@ def templar(**params):
 
 def resolve(name, **params):
     """Return variable ``name`` as the playbook sees it."""
-    return templar(**params).template("{{ %s }}" % name, convert_data=True)
+    return templar(**params).template(f"{{{{ {name} }}}}", convert_data=True)
 
 
 def render(template, **params):

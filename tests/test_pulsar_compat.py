@@ -14,7 +14,9 @@ from tests.helpers import PASSWORD, render_yaml, resolve
 
 
 def connection(app_yml, manager="_default_"):
-    exchange = bind_amqp.get_exchange(app_yml["message_queue_url"], manager, dict(app_yml))
+    # Without persistence_directory: the acknowledgement stores would create it.
+    params = {key: value for key, value in app_yml.items() if key != "persistence_directory"}
+    exchange = bind_amqp.get_exchange(app_yml["message_queue_url"], manager, params)
     return exchange, exchange.connection(exchange.url)
 
 
@@ -32,12 +34,15 @@ class ConnectionTest(unittest.TestCase):
     def test_tls_verifies_certificate_and_hostname(self):
         _, conn = connection(render_yaml("pulsar-app.yml.j2"))
 
-        self.assertEqual(conn.ssl, {
-            "cert_reqs": ssl.CERT_REQUIRED,
-            "ca_certs": "/etc/ssl/certs/ca-certificates.crt",
-            # py-amqp only checks the hostname when server_hostname is set.
-            "server_hostname": "galaxy.example.org",
-        })
+        self.assertEqual(
+            conn.ssl,
+            {
+                "cert_reqs": ssl.CERT_REQUIRED,
+                "ca_certs": "/etc/ssl/certs/ca-certificates.crt",
+                # py-amqp only checks the hostname when server_hostname is set.
+                "server_hostname": "galaxy.example.org",
+            },
+        )
 
     def test_ssl_query_would_discard_the_tls_settings(self):
         # Why message_queue_url has no ?ssl=1: kombu lets the URL's ssl replace the
@@ -50,10 +55,7 @@ class ConnectionTest(unittest.TestCase):
         self.assertNotIsInstance(conn.ssl, dict)
 
     def test_acknowledgement_and_publish_retries(self):
-        app_yml = render_yaml("pulsar-app.yml.j2")
-        app_yml.pop("persistence_directory")  # the UUID stores would create directories
-
-        exchange, _ = connection(app_yml)
+        exchange, _ = connection(render_yaml("pulsar-app.yml.j2"))
 
         self.assertEqual(exchange._PulsarExchange__republish_time, 1200)
         self.assertTrue(exchange._PulsarExchange__publish_kwds["retry"])
@@ -64,9 +66,9 @@ class QueueNamesTest(unittest.TestCase):
     def test_setup_queue(self):
         for manager in ("_default_", "gpu"):
             with self.subTest(manager=manager):
-                app_yml = render_yaml("pulsar-app.yml.j2", pulsar_manager=manager)
-                app_yml.pop("persistence_directory")
-                exchange, _ = connection(app_yml, manager)
+                exchange, _ = connection(
+                    render_yaml("pulsar-app.yml.j2", pulsar_manager=manager), manager
+                )
 
                 self.assertEqual(
                     resolve("_pulsar_amqp", pulsar_manager=manager)["setup_queue"],

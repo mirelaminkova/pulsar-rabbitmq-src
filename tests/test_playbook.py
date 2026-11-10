@@ -28,19 +28,36 @@ def task_named(task_list, name):
 
 class RemovedRelayTest(unittest.TestCase):
     def test_relay_valkey_and_admin_files_are_gone(self):
-        for path in ("relay_src", "Dockerfile", "compose.yml", ".dockerignore", "files/valkey.conf",
-                     "scripts", "templates/admin-location.conf.j2", "templates/admin-sync.service.j2",
-                     "templates/admin-sync.timer.j2"):
+        for path in (
+            "relay_src",
+            "Dockerfile",
+            "compose.yml",
+            ".dockerignore",
+            "files/valkey.conf",
+            "scripts",
+            "templates/admin-location.conf.j2",
+            "templates/admin-sync.service.j2",
+            "templates/admin-sync.timer.j2",
+        ):
             with self.subTest(path=path):
                 self.assertFalse((REPO / path).exists())
 
     def test_no_relay_or_broker_on_this_workspace(self):
-        files = [REPO / "playbook.yml", REPO / "parameters.yml", REPO / "group_vars" / "all.yml",
-                 *(REPO / "tasks").glob("*.yml"), *(REPO / "templates").iterdir()]
+        files = [
+            REPO / "playbook.yml",
+            REPO / "parameters.yml",
+            REPO / "group_vars" / "all.yml",
+            *(REPO / "tasks").glob("*.yml"),
+            *(REPO / "templates").iterdir(),
+        ]
         for path in files:
             with self.subTest(path=path.name):
                 text = path.read_text().lower()
-                found = [w for w in ("relay", "valkey", "rabbitmq-server", "sram_admin", "admin-sync") if w in text]
+                found = [
+                    w
+                    for w in ("relay", "valkey", "rabbitmq-server", "sram_admin", "admin-sync")
+                    if w in text
+                ]
                 self.assertEqual(found, [])
 
 
@@ -48,8 +65,15 @@ class ParametersTest(unittest.TestCase):
     def test_component_parameters_map_onto_galaxy(self):
         parameters = load_yaml("parameters.yml")
 
-        for name in ("pulsar_galaxy_fqdn", "pulsar_amqp_port", "pulsar_amqp_name",
-                     "pulsar_amqp_password", "pulsar_manager", "pulsar_staging_dir", "pulsar_cvmfs"):
+        for name in (
+            "pulsar_galaxy_fqdn",
+            "pulsar_amqp_port",
+            "pulsar_amqp_name",
+            "pulsar_amqp_password",
+            "pulsar_manager",
+            "pulsar_staging_dir",
+            "pulsar_cvmfs",
+        ):
             self.assertIn(name, parameters)
         self.assertEqual(parameters["pulsar_amqp_password"], "")
 
@@ -69,33 +93,47 @@ class PlaybookTest(unittest.TestCase):
         self.assertTrue(pre_tasks[0].get("no_log") is not True)  # the message must be visible
 
     def test_tasks_with_secrets_are_not_logged(self):
-        for path in ("playbook.yml", "tasks/pulsar.yml"):
-            for task in tasks(path) if path != "playbook.yml" else play()["tasks"]:
-                text = str(task)
-                if "pulsar-app.yml.j2" in text or "welcome.html.j2" in text:
-                    with self.subTest(task=task["name"]):
-                        self.assertIs(task.get("no_log"), True)
-                        self.assertIs(task.get("diff"), False)
+        play_tasks = [t for task in play()["tasks"] for t in [task, *task.get("block", [])]]
+        for task in play_tasks + tasks("tasks/pulsar.yml"):
+            text = str(task)
+            if "block" not in task and ("pulsar-app.yml.j2" in text or "welcome.html.j2" in text):
+                with self.subTest(task=task["name"]):
+                    self.assertIs(task.get("no_log"), True)
+                    self.assertIs(task.get("diff"), False)
 
     def test_app_yml_is_readable_by_pulsar_only(self):
-        task = task_named(tasks("tasks/pulsar.yml"), "Write Pulsar's app.yml with the Galaxy broker connection")
+        task = task_named(
+            tasks("tasks/pulsar.yml"), "Write Pulsar's app.yml with the Galaxy broker connection"
+        )
         module = task["ansible.builtin.template"]
 
-        self.assertEqual((module["owner"], module["group"], module["mode"]), ("root", "{{ pulsar_user }}", "0640"))
+        self.assertEqual(
+            (module["owner"], module["group"], module["mode"]),
+            ("root", "{{ pulsar_user }}", "0640"),
+        )
 
     def test_pulsar_installed_with_amqp_support(self):
-        task = task_named(tasks("tasks/pulsar.yml"), "Install pulsar-app with AMQP support into the venv")
+        task = task_named(
+            tasks("tasks/pulsar.yml"), "Install pulsar-app with AMQP support into the venv"
+        )
 
         self.assertIn("pulsar-app[amqp]=={{ pulsar_version }}", task["ansible.builtin.pip"]["name"])
         self.assertEqual(resolve("pulsar_version"), "0.15.15")
 
     def test_connection_check_after_restart_and_fails_clearly(self):
         names = [t.get("name") for t in tasks("tasks/pulsar.yml")]
-        check = task_named(tasks("tasks/pulsar.yml"), "Check that Pulsar consumes its setup queue on Galaxy's broker")
-        report = task_named(tasks("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker")
+        check = task_named(
+            tasks("tasks/pulsar.yml"),
+            "Check that Pulsar consumes its setup queue on Galaxy's broker",
+        )
+        report = task_named(
+            tasks("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker"
+        )
 
-        self.assertLess(names.index("Apply pending Pulsar restarts before checking the connection"),
-                        names.index(check["name"]))
+        self.assertLess(
+            names.index("Apply pending Pulsar restarts before checking the connection"),
+            names.index(check["name"]),
+        )
         self.assertEqual(names.index(report["name"]), names.index(check["name"]) + 1)
         argv = check["ansible.builtin.command"]["argv"]
         self.assertEqual(argv[0], "{{ pulsar_venv }}/bin/python")

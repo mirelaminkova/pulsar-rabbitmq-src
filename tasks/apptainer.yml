@@ -22,7 +22,7 @@
 
 # Galaxy resolves the container image and builds the `singularity exec` command;
 # the SRC Galaxy component cannot pass singularity_volumes with commas through its
-# one-line relay parameter. Binding /cvmfs system-wide gives every container the
+# one-line Pulsar parameters. Binding /cvmfs system-wide gives every container the
 # reference data and images Galaxy's command line refers to.
 - name: Bind /cvmfs into every Apptainer container
   ansible.builtin.lineinfile:
@@ -30,4 +30,4 @@
     regexp: '^bind path = /cvmfs$'
     line: bind path = /cvmfs
     insertafter: '^bind path = '
-  when: _relay_pulsar_cvmfs | bool
+  when: _pulsar_cvmfs | bool

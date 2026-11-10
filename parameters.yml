@@ -1,13 +1,18 @@
-# Defaults for SRC component parameters. Secrets are generated on the workspace.
-relay_port: 8080
-relay_admin_co_group: src_co_admin
-relay_pair_username: galaxy-pulsar
-# Leave empty to generate a password on the workspace (recommended).
-relay_pair_password: ""
-relay_topic_prefix: src
-# "true" also installs Pulsar on this workspace, connected to this relay.
-relay_install_pulsar: "false"
-# With relay_install_pulsar, mount the Galaxy CVMFS repositories (reference data and
-# Singularity images under /cvmfs) for that Pulsar. "false" leaves CVMFS out.
-relay_pulsar_cvmfs: "true"
-# Add relay_public_url as a component parameter if hostname autodetection is wrong.
+---
+# Defaults for SRC component parameters (strings, as SRC passes them). Each one
+# matches a value of this Pulsar's entry in the Galaxy component's
+# src_galaxy_pulsar_amqp_configs (mirelaminkova/src-component-galaxy-amqp).
+# Galaxy workspace hostname, e.g. galaxy.example.org (no https://). Required.
+pulsar_galaxy_fqdn: ""
+# Galaxy's src_galaxy_rabbitmq_port.
+pulsar_amqp_port: "5671"
+# The entry's name. Required.
+pulsar_amqp_name: ""
+# The entry's password: at least 12 of A-Z a-z 0-9 . _ ~ -. Required; mark it as secret.
+pulsar_amqp_password: ""
+# The entry's manager.
+pulsar_manager: _default_
+# The entry's jobs_directory (Pulsar's staging directory).
+pulsar_staging_dir: /mnt/pulsar/files/staging
+# Mount the Galaxy CVMFS repositories (reference data and Singularity images). "false" leaves CVMFS out.
+pulsar_cvmfs: "true"

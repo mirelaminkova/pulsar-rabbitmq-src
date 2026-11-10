@@ -7,20 +7,20 @@ are simulated, since issue #4 adds the end-to-end test with Galaxy's RabbitMQ.
 
 import datetime
 import importlib.util
-from pathlib import Path
 import socket
 import ssl
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import yaml
 from amqp import exceptions as amqp_exceptions
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-import yaml
 
 from tests.helpers import PASSWORD, REPO, render
 
@@ -75,29 +75,53 @@ class CheckResultTest(unittest.TestCase):
         self.assertResult(run_check(FakeChannel(result=0)), check_amqp.RETRY, "pulsar__setup")
 
     def test_missing_queue_is_retried(self):
-        error = amqp_exceptions.NotFound("NOT_FOUND - no queue 'pulsar__setup' in vhost '/pulsar/hpc'")
-        self.assertResult(run_check(FakeChannel(error=error)), check_amqp.RETRY, "journalctl -u pulsar")
+        error = amqp_exceptions.NotFound(
+            "NOT_FOUND - no queue 'pulsar__setup' in vhost '/pulsar/hpc'"
+        )
+        self.assertResult(
+            run_check(FakeChannel(error=error)), check_amqp.RETRY, "journalctl -u pulsar"
+        )
 
     def test_login_refused(self):
         error = amqp_exceptions.AccessRefused(f"ACCESS_REFUSED - Login was refused {PASSWORD}")
-        self.assertResult(run_check(connect_error=error), check_amqp.FAILED,
-                          "hpc", "pulsar_amqp_password", "src_galaxy_pulsar_amqp_configs")
+        self.assertResult(
+            run_check(connect_error=error),
+            check_amqp.FAILED,
+            "hpc",
+            "pulsar_amqp_password",
+            "src_galaxy_pulsar_amqp_configs",
+        )
 
     def test_vhost_not_allowed(self):
         error = amqp_exceptions.NotAllowed("NOT_ALLOWED - access to vhost '/pulsar/hpc' refused")
-        self.assertResult(run_check(connect_error=error), check_amqp.FAILED, "/pulsar/hpc", "pulsar_amqp_name")
+        self.assertResult(
+            run_check(connect_error=error), check_amqp.FAILED, "/pulsar/hpc", "pulsar_amqp_name"
+        )
 
     def test_unknown_host(self):
         error = socket.gaierror(-2, "Name or service not known")
-        self.assertResult(run_check(connect_error=error), check_amqp.FAILED, "galaxy.example.org", "pulsar_galaxy_fqdn")
+        self.assertResult(
+            run_check(connect_error=error),
+            check_amqp.FAILED,
+            "galaxy.example.org",
+            "pulsar_galaxy_fqdn",
+        )
 
     def test_unreachable_broker_is_retried(self):
-        self.assertResult(run_check(connect_error=ConnectionRefusedError(111, "refused")),
-                          check_amqp.RETRY, "galaxy.example.org:5671", "src_galaxy_rabbitmq")
-        self.assertResult(run_check(connect_error=TimeoutError("timed out")), check_amqp.RETRY, "5671")
+        self.assertResult(
+            run_check(connect_error=ConnectionRefusedError(111, "refused")),
+            check_amqp.RETRY,
+            "galaxy.example.org:5671",
+            "src_galaxy_rabbitmq",
+        )
+        self.assertResult(
+            run_check(connect_error=TimeoutError("timed out")), check_amqp.RETRY, "5671"
+        )
 
     def test_unexpected_errors_never_show_the_password(self):
-        result = run_check(connect_error=RuntimeError(f"pyamqp://hpc:{PASSWORD}@galaxy.example.org"))
+        result = run_check(
+            connect_error=RuntimeError(f"pyamqp://hpc:{PASSWORD}@galaxy.example.org")
+        )
         self.assertResult(result, check_amqp.FAILED, "RuntimeError")
 
     def test_only_connection_settings_reach_pulsar(self):
@@ -116,8 +140,12 @@ class CheckResultTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "app.yml"
             path.write_text(render("pulsar-app.yml.j2"))
-            with mock.patch.object(check_amqp, "check", return_value=(check_amqp.RETRY, "later")) as check, \
-                    mock.patch("builtins.print") as printed:
+            with (
+                mock.patch.object(
+                    check_amqp, "check", return_value=(check_amqp.RETRY, "later")
+                ) as check,
+                mock.patch("builtins.print") as printed,
+            ):
                 self.assertEqual(check_amqp.main([str(path), "_default_"]), check_amqp.RETRY)
         check.assert_called_once()
         printed.assert_called_once_with("later")
@@ -137,7 +165,9 @@ def certificate(name, issuer_key, issuer_name, key, ca=False):
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
     if not ca:
-        builder = builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+        builder = builder.add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False
+        )
     return builder.sign(issuer_key, hashes.SHA256())
 
 
@@ -151,8 +181,14 @@ class TlsServer:
     def __init__(self, directory, name, ca_key, ca_cert):
         key = ec.generate_private_key(ec.SECP256R1())
         cert = certificate(name, ca_key, ca_cert.subject, key)
-        (directory / "server.pem").write_bytes(pem(cert) + key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        (directory / "server.pem").write_bytes(
+            pem(cert)
+            + key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.context.load_cert_chain(directory / "server.pem")
         self.sock = socket.create_server(("127.0.0.1", 0))
@@ -195,7 +231,9 @@ class TlsVerificationTest(unittest.TestCase):
         # Connect to the local server; the TLS settings stay as rendered, so the
         # hostname checked is still pulsar_galaxy_fqdn (galaxy.example.org).
         url = f"pyamqp://hpc:{PASSWORD}@127.0.0.1:{server.port}//pulsar/hpc"
-        conf = app_yml(message_queue_url=url, amqp_connect_ssl_ca_certs=ca_certs or str(self.dir / "ca.pem"))
+        conf = app_yml(
+            message_queue_url=url, amqp_connect_ssl_ca_certs=ca_certs or str(self.dir / "ca.pem")
+        )
         return check_amqp.check(conf, "_default_")
 
     def test_matching_certificate_passes_tls(self):
@@ -214,8 +252,10 @@ class TlsVerificationTest(unittest.TestCase):
 
     def test_untrusted_certificate_is_rejected(self):
         # The system CA bundle, as on the workspace, does not trust the test CA.
-        code, message = self.check("galaxy.example.org", ca_certs=ssl.get_default_verify_paths().cafile
-                                   or "/etc/ssl/certs/ca-certificates.crt")
+        code, message = self.check(
+            "galaxy.example.org",
+            ca_certs=ssl.get_default_verify_paths().cafile or "/etc/ssl/certs/ca-certificates.crt",
+        )
 
         self.assertEqual(code, check_amqp.FAILED, message)
         self.assertIn("certificate", message)

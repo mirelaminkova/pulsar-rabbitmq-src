@@ -6,8 +6,8 @@ from Galaxy's parse of our welcome-page entry and compared with our app.yml.
 
 import filecmp
 import os
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import jinja2
 import yaml
@@ -20,23 +20,32 @@ from tests.helpers import GALAXY_CONTRACT, PASSWORD, render_yaml, resolve
 def galaxy_app_yml(settings):
     [entry] = src_galaxy.src_config_list(settings["galaxy_entry"], "src_galaxy_pulsar_amqp_configs")
     [item] = src_galaxy.pulsar_amqp_configs([entry])
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
+    # Renders YAML, not HTML, like Ansible's template module: no autoescaping.
+    env = jinja2.Environment(  # noqa: S701  # nosemgrep: missing-autoescape-disabled
+        undefined=jinja2.StrictUndefined, trim_blocks=True
+    )
     env.filters.update(FilterModule().filters())
     template = env.from_string((GALAXY_CONTRACT / "pulsar_amqp_app.yml.j2").read_text())
-    return yaml.safe_load(template.render(
-        item=item,
-        _galaxy_rabbitmq_passwords={item["name"]: item["password"]},
-        _galaxy_server_fqdn=settings["galaxy_fqdn"],
-        _galaxy_rabbitmq_port=settings["port"],
-    ))
+    return yaml.safe_load(
+        template.render(
+            item=item,
+            _galaxy_rabbitmq_passwords={item["name"]: item["password"]},
+            _galaxy_server_fqdn=settings["galaxy_fqdn"],
+            _galaxy_rabbitmq_port=settings["port"],
+        )
+    )
 
 
 class AppYmlMatchesGalaxyTest(unittest.TestCase):
-    PARAMS = [
+    PARAMS = (
         {},
-        {"pulsar_manager": "gpu", "pulsar_staging_dir": "/data/volume_2/staging",
-         "pulsar_amqp_port": "15671", "pulsar_amqp_name": "eu_hpc-2"},
-    ]
+        {
+            "pulsar_manager": "gpu",
+            "pulsar_staging_dir": "/data/volume_2/staging",
+            "pulsar_amqp_port": "15671",
+            "pulsar_amqp_name": "eu_hpc-2",
+        },
+    )
 
     def test_every_galaxy_setting_is_in_our_app_yml(self):
         for params in self.PARAMS:
@@ -66,9 +75,11 @@ class AppYmlMatchesGalaxyTest(unittest.TestCase):
         self.assertEqual(ours["amqp_connect_ssl_server_hostname"], "galaxy.example.org")
 
 
-@unittest.skipUnless(os.environ.get("GALAXY_AMQP_REPO"), "set GALAXY_AMQP_REPO to a Galaxy repository checkout")
+@unittest.skipUnless(
+    os.environ.get("GALAXY_AMQP_REPO"), "set GALAXY_AMQP_REPO to a Galaxy repository checkout"
+)
 class VendoredFilesTest(unittest.TestCase):
-    FILES = {
+    FILES = {  # noqa: RUF012 - read only
         "src_galaxy.py": "filter_plugins/src_galaxy.py",
         "pulsar_amqp_app.yml.j2": "templates/rabbitmq/pulsar_amqp_app.yml.j2",
     }
@@ -79,7 +90,8 @@ class VendoredFilesTest(unittest.TestCase):
             with self.subTest(file=ours):
                 self.assertTrue(
                     filecmp.cmp(GALAXY_CONTRACT / ours, checkout / theirs, shallow=False),
-                    f"{theirs} changed in the Galaxy repository; review it and copy it to tests/galaxy_contract/",
+                    f"{theirs} changed in the Galaxy repository; "
+                    "review it and copy it to tests/galaxy_contract/",
                 )
 
 

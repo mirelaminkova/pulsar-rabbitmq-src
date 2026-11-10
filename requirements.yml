@@ -2,13 +2,11 @@
 roles:
   - name: geerlingguy.docker
     version: 6.1.0
-  # CernVM-FS client for the co-located Pulsar, as in the SRC Galaxy component.
+  # CernVM-FS client, as in the SRC Galaxy component.
   - name: galaxyproject.cvmfs
     version: 0.5.0
 collections:
   - name: community.general
-  - name: community.docker
-    version: 3.13.3
   - name: https://github.com/UtrechtUniversity/researchcloud-items.git
     type: git
     version: 02dab70feb046030e46e55886c2afa8ae7982c08

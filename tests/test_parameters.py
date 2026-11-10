@@ -80,8 +80,14 @@ class ValidationTest(unittest.TestCase):
         self.assertTrue(all("required" in error for error in errors), errors)
 
     def test_galaxy_fqdn_must_be_a_hostname(self):
-        for value in ("https://galaxy.example.org", "galaxy.example.org/", "galaxy",
-                      "galaxy.example.org:5671", "-x.example.org", "a b.example.org"):
+        for value in (
+            "https://galaxy.example.org",
+            "galaxy.example.org/",
+            "galaxy",
+            "galaxy.example.org:5671",
+            "-x.example.org",
+            "a b.example.org",
+        ):
             with self.subTest(value=value):
                 self.assertInvalid("pulsar_galaxy_fqdn", galaxy_fqdn=value)
 
@@ -92,7 +98,13 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(pulsar_amqp_errors(settings(port="15671")), [])
 
     def test_password_is_never_echoed(self):
-        for value in ("short", "has space in it", "with,comma1234", "quote'1234567890", "colon:1234567890"):
+        for value in (
+            "short",
+            "has space in it",
+            "with,comma1234",
+            "quote'1234567890",
+            "colon:1234567890",
+        ):
             with self.subTest(value=value):
                 errors = pulsar_amqp_errors(settings(password=value))
                 self.assertEqual(len(errors), 1, errors)
@@ -114,11 +126,32 @@ class ValidationTest(unittest.TestCase):
 class SameRulesAsGalaxyTest(unittest.TestCase):
     """For name, password and manager: valid here <=> Galaxy accepts our entry."""
 
-    CASES = {
-        "name": ["hpc", "eu_hpc-2", "a" * 64, "a" * 65, "HPC", "hp c", "galaxy", "guest",
-                 "true", "false", "hpc.1", ""],
-        "password": [PASSWORD, "abcdefghijkl", "abcdefghijk", "a~b.c_d-e123", "abc+defghijkl",
-                     "abc@defghijkl", "abc/defghijkl", "true" * 3, "x" * 200],
+    CASES = {  # noqa: RUF012 - read only
+        "name": [
+            "hpc",
+            "eu_hpc-2",
+            "a" * 64,
+            "a" * 65,
+            "HPC",
+            "hp c",
+            "galaxy",
+            "guest",
+            "true",
+            "false",
+            "hpc.1",
+            "",
+        ],
+        "password": [
+            PASSWORD,
+            "abcdefghijkl",
+            "abcdefghijk",
+            "a~b.c_d-e123",
+            "abc+defghijkl",
+            "abc@defghijkl",
+            "abc/defghijkl",
+            "true" * 3,
+            "x" * 200,
+        ],
         "manager": ["_default_", "gpu", "Big-Queue_1", "a.b", "true", "with space"],
     }
 
@@ -134,7 +167,9 @@ class SameRulesAsGalaxyTest(unittest.TestCase):
 
 class GalaxyEntryTest(unittest.TestCase):
     def parsed(self, result):
-        [entry] = src_galaxy.src_config_list(result["galaxy_entry"], "src_galaxy_pulsar_amqp_configs")
+        [entry] = src_galaxy.src_config_list(
+            result["galaxy_entry"], "src_galaxy_pulsar_amqp_configs"
+        )
         return entry
 
     def test_galaxy_parses_the_entry_without_errors(self):
@@ -144,8 +179,12 @@ class GalaxyEntryTest(unittest.TestCase):
         self.assertLessEqual(set(self.parsed(result)), src_galaxy.AMQP_KEYS)
 
     def test_galaxy_derives_the_same_connection(self):
-        result = settings(manager="gpu", jobs_directory="/data/volume_2/staging",
-                          docker_enabled="false", singularity_enabled="true")
+        result = settings(
+            manager="gpu",
+            jobs_directory="/data/volume_2/staging",
+            docker_enabled="false",
+            singularity_enabled="true",
+        )
         [config] = src_galaxy.pulsar_amqp_configs([self.parsed(result)])
 
         self.assertEqual(config["name"], "hpc")
@@ -156,6 +195,21 @@ class GalaxyEntryTest(unittest.TestCase):
         self.assertIs(config["singularity_enabled"], True)
         self.assertIs(config["docker_enabled"], False)
 
+    def test_one_container_type(self):
+        # With both, Galaxy would prefer Docker; Apptainer uses the CVMFS images and binds.
+        for docker, singularity, expected in (
+            ("true", "true", "singularity_enabled"),
+            ("true", "false", "docker_enabled"),
+            ("false", "true", "singularity_enabled"),
+        ):
+            with self.subTest(docker=docker, singularity=singularity):
+                entry = self.parsed(
+                    settings(docker_enabled=docker, singularity_enabled=singularity)
+                )
+                self.assertEqual({key for key in entry if key.endswith("_enabled")}, {expected})
+        entry = self.parsed(settings(docker_enabled="false", singularity_enabled="false"))
+        self.assertFalse({key for key in entry if key.endswith("_enabled")})
+
     def test_one_line(self):
         self.assertNotIn("\n", settings()["galaxy_entry"])
 
@@ -164,7 +218,9 @@ class GroupVarsTest(unittest.TestCase):
     def test_group_vars_build_the_settings_from_the_component_parameters(self):
         result = resolve("_pulsar_amqp")
 
-        self.assertEqual(result["url"], f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc")
+        self.assertEqual(
+            result["url"], f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
+        )
         self.assertEqual(result["jobs_directory"], "/mnt/pulsar/files/staging")
         self.assertEqual(resolve("_pulsar_amqp_errors"), [])
 
@@ -174,8 +230,10 @@ class GroupVarsTest(unittest.TestCase):
         self.assertEqual(len(errors), 2, errors)
 
     def test_empty_staging_parameter_keeps_the_default(self):
-        self.assertEqual(resolve("_pulsar_amqp", pulsar_staging_dir="")["jobs_directory"],
-                         "/mnt/pulsar/files/staging")
+        self.assertEqual(
+            resolve("_pulsar_amqp", pulsar_staging_dir="")["jobs_directory"],
+            "/mnt/pulsar/files/staging",
+        )
 
 
 if __name__ == "__main__":

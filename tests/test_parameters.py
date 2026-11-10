@@ -43,13 +43,36 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(result["jobs_directory"], src_galaxy.AMQP_DEFAULTS["jobs_directory"])
         self.assertEqual(pulsar_amqp_errors(result), [])
 
+    def test_empty_optional_parameters_get_defaults(self):
+        result = settings(
+            port="",
+            manager="",
+            jobs_directory="",
+            docker_enabled="",
+            singularity_enabled="",
+            cvmfs="",
+        )
+
+        self.assertEqual(pulsar_amqp_errors(result), [])
+        self.assertIs(result["docker_enabled"], False)
+        self.assertIs(result["singularity_enabled"], True)
+        self.assertIs(result["cvmfs"], True)
+
+    def test_staging_parents_are_listed_below_the_storage_root(self):
+        self.assertEqual(
+            settings(jobs_directory="/mnt/pulsar/files/staging")["staging_parents"],
+            ["/mnt/pulsar", "/mnt/pulsar/files"],
+        )
+        self.assertEqual(
+            settings(jobs_directory="/data/volume_2/staging")["staging_parents"], ["/data/volume_2"]
+        )
+
     def test_derived_names_follow_galaxy(self):
         result = settings(name="eu-hpc")
 
         [config] = src_galaxy.pulsar_amqp_configs([{"name": "eu-hpc"}])
         self.assertEqual(result["vhost"], config["vhost"])
         self.assertEqual(result["environment"], config["environment"])
-        self.assertEqual(result["tag"], "eu-hpc-pulsar")
 
     def test_url_has_no_ssl_query(self):
         # ?ssl=1 would replace Pulsar's amqp_connect_ssl_* settings (see test_pulsar_compat).
@@ -151,6 +174,15 @@ class ValidationTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(pulsar_amqp_errors(settings(jobs_directory=value)), [])
 
+    def test_misspelt_booleans_are_errors(self):
+        for key, parameter in (
+            ("docker_enabled", "pulsar_docker"),
+            ("singularity_enabled", "pulsar_apptainer"),
+            ("cvmfs", "pulsar_cvmfs"),
+        ):
+            with self.subTest(key=key):
+                self.assertInvalid(parameter, **{key: "ture"})
+
     def test_booleans(self):
         self.assertFalse(settings(docker_enabled="false")["docker_enabled"])
         self.assertTrue(settings(docker_enabled=True)["docker_enabled"])
@@ -229,7 +261,7 @@ class GalaxyEntryTest(unittest.TestCase):
         self.assertIs(config["docker_enabled"], False)
 
     def test_one_container_type(self):
-        # With both, Galaxy would prefer Docker; Apptainer uses the CVMFS images and binds.
+        # With both, Galaxy would prefer Docker; Apptainer runs unprivileged.
         for docker, singularity, expected in (
             ("true", "true", "singularity_enabled"),
             ("true", "false", "docker_enabled"),

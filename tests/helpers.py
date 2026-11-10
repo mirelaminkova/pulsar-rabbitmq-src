@@ -56,6 +56,11 @@ def resolve(name, **params):
     return templar(**params).template(f"{{{{ {name} }}}}", convert_data=True)
 
 
+def resolve_text(text, **params):
+    """Template a string such as a task argument, as the playbook would."""
+    return templar(**params).template(text)
+
+
 def render(template, **params):
     """Render ``templates/<template>`` like ansible.builtin.template (trim_blocks)."""
     text = (REPO / "templates" / template).read_text()

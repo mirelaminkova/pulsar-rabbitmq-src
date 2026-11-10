@@ -17,19 +17,31 @@
     groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
     append: true
 
-- name: Create Pulsar directories
+# Every directory the pulsar user owns sits in a root-owned one, and links are not
+# followed: otherwise a job could swap a directory for a link to, say, the venv,
+# and the next run (as root) would hand that to the pulsar user.
+- name: Create root-owned Pulsar directories
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ item.owner }}"
-    group: "{{ item.owner }}"
-    mode: "{{ item.mode }}"
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  loop: "{{ [pulsar_venv | dirname, pulsar_config_dir, pulsar_data_dir] + _pulsar_amqp.staging_parents }}"
+
+- name: Create Pulsar's working directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ pulsar_user }}"
+    group: "{{ pulsar_user }}"
+    mode: '0750'
+    follow: false
   loop:
-    - {path: "{{ pulsar_venv | dirname }}", owner: root, mode: '0755'}
-    - {path: "{{ pulsar_config_dir }}", owner: root, mode: '0755'}
-    - {path: "{{ pulsar_home }}", owner: "{{ pulsar_user }}", mode: '0750'}
-    - {path: "{{ pulsar_persistence_dir }}", owner: "{{ pulsar_user }}", mode: '0750'}
-    - {path: "{{ _pulsar_amqp.jobs_directory }}", owner: "{{ pulsar_user }}", mode: '0750'}
+    - "{{ pulsar_home }}"
+    - "{{ pulsar_persistence_dir }}"
+    - "{{ _pulsar_amqp.jobs_directory }}"
 
 # No `creates:`, so a version change in group_vars upgrades the venv.
 # The amqp extra installs kombu, which Pulsar needs for pyamqp:// message queues.
@@ -88,6 +100,16 @@
     group: root
     mode: '0755'
 
+# Before the tasks that can fail: force_handlers then restarts an existing unit.
+- name: Install the Pulsar systemd unit
+  ansible.builtin.template:
+    src: templates/pulsar.service.j2
+    dest: /etc/systemd/system/pulsar.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart Pulsar
+
 - name: Install Apptainer for Singularity-enabled Galaxy environments
   ansible.builtin.include_tasks: tasks/apptainer.yml
   when: _pulsar_amqp.singularity_enabled
@@ -101,17 +123,7 @@
   failed_when: not _pulsar_cvmfs_repositories.stat.exists
   loop:
     - /cvmfs/data.galaxyproject.org/managed/location/tool_data_table_conf.xml
-    - /cvmfs/singularity.galaxyproject.org/all
   when: _pulsar_cvmfs | bool
-
-- name: Install the Pulsar systemd unit
-  ansible.builtin.template:
-    src: templates/pulsar.service.j2
-    dest: /etc/systemd/system/pulsar.service
-    owner: root
-    group: root
-    mode: '0644'
-  notify: Restart Pulsar
 
 - name: Enable and start Pulsar
   ansible.builtin.systemd:

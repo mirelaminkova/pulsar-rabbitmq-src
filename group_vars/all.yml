@@ -17,8 +17,8 @@ pulsar_manager: _default_
 # The entry's `jobs_directory`: Pulsar's staging directory. Set it to attached
 # storage for larger data, on both sides.
 pulsar_staging_dir: /mnt/pulsar/files/staging
-# Mount the Galaxy project's CVMFS repositories (reference data and Singularity
-# images under /cvmfs), as the Galaxy component does with src_galaxy_cvmfs.
+# Mount the Galaxy project's CVMFS repositories under /cvmfs (reference data for
+# Galaxy's tool data tables), as the Galaxy component does with src_galaxy_cvmfs.
 pulsar_cvmfs: true
 # Install Apptainer (with its `singularity` command), unprivileged (no setuid
 # starter); the welcome page's Galaxy entry then sets singularity_enabled.
@@ -33,15 +33,19 @@ _pulsar_amqp: >-
   {{ {'galaxy_fqdn': pulsar_galaxy_fqdn, 'port': pulsar_amqp_port,
       'name': pulsar_amqp_name, 'password': pulsar_amqp_password,
       'manager': pulsar_manager, 'jobs_directory': pulsar_staging_dir,
-      'docker_enabled': pulsar_docker, 'singularity_enabled': pulsar_apptainer}
+      'docker_enabled': pulsar_docker, 'singularity_enabled': pulsar_apptainer,
+      'cvmfs': pulsar_cvmfs}
      | pulsar_amqp_settings }}
 _pulsar_amqp_errors: "{{ _pulsar_amqp | pulsar_amqp_errors }}"
-_pulsar_cvmfs: "{{ pulsar_cvmfs | default(true, true) | bool }}"
+_pulsar_cvmfs: "{{ _pulsar_amqp.cvmfs }}"
 
 # --- Pulsar ------------------------------------------------------------------
 pulsar_user: pulsar
-pulsar_home: /var/lib/pulsar
-pulsar_persistence_dir: "{{ pulsar_home }}/persisted_data"
+# Root-owned, so that the pulsar user cannot replace the directories below it.
+pulsar_data_dir: /var/lib/pulsar
+# The pulsar user's home (Apptainer's image cache).
+pulsar_home: "{{ pulsar_data_dir }}/home"
+pulsar_persistence_dir: "{{ pulsar_data_dir }}/persisted_data"
 pulsar_venv: /opt/pulsar/venv
 pulsar_config_dir: /opt/pulsar/config
 pulsar_check_script: /opt/pulsar/check_amqp.py

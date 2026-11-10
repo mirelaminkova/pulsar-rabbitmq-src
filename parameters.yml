@@ -14,7 +14,7 @@ pulsar_amqp_password: ""
 pulsar_manager: _default_
 # The entry's jobs_directory (Pulsar's staging directory).
 pulsar_staging_dir: /mnt/pulsar/files/staging
-# Mount the Galaxy CVMFS repositories (reference data and Singularity images). "false" leaves CVMFS out.
+# Mount the Galaxy CVMFS repositories (reference data). "false" leaves CVMFS out.
 pulsar_cvmfs: "true"
 # "false" leaves Apptainer out; the Galaxy entry then has no singularity_enabled.
 pulsar_apptainer: "true"

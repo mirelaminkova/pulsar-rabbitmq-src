@@ -15,6 +15,9 @@ DEFAULTS = {
     "port": 5671,  # src_galaxy_rabbitmq_port
     "manager": "_default_",
     "jobs_directory": "/mnt/pulsar/files/staging",
+    "docker_enabled": False,
+    "singularity_enabled": True,
+    "cvmfs": True,
 }
 
 # As in Galaxy's parser.
@@ -39,17 +42,20 @@ def _text(value):
     return "" if value is None else str(value).strip()
 
 
-def _boolean(value):
+def _boolean(value, default):
     if isinstance(value, bool):
         return value
-    return _BOOLEANS.get(_text(value).lower(), value)
+    text = _text(value).lower()
+    if not text:
+        return default
+    return _BOOLEANS.get(text, value)
 
 
 def pulsar_amqp_settings(params):
     """Normalise the component parameters and derive the names Galaxy and Pulsar use.
 
     ``params`` has the keys galaxy_fqdn, port, name, password, manager, jobs_directory,
-    docker_enabled and singularity_enabled. Empty values (how SRC passes an unset
+    docker_enabled, singularity_enabled and cvmfs. Empty values (how SRC passes an unset
     parameter) get Galaxy's defaults. The result is meaningful only without
     :func:`pulsar_amqp_errors`.
     """
@@ -61,14 +67,13 @@ def pulsar_amqp_settings(params):
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
         "jobs_directory": _text(params.get("jobs_directory")) or DEFAULTS["jobs_directory"],
-        "docker_enabled": _boolean(params.get("docker_enabled", False)),
-        "singularity_enabled": _boolean(params.get("singularity_enabled", False)),
     }
+    for key in ("docker_enabled", "singularity_enabled", "cvmfs"):
+        settings[key] = _boolean(params.get(key), DEFAULTS[key])
     name, manager = settings["name"], settings["manager"]
     settings.update(
         vhost=f"/pulsar/{name}",
         environment=f"amqp_{name}",
-        tag=f"{name}-pulsar",
         # Pulsar's queue for new jobs: "<key prefix>_setup", prefix "pulsar_" for the
         # default manager and "pulsar_<manager>_" otherwise.
         setup_queue="pulsar__setup" if manager == "_default_" else f"pulsar_{manager}__setup",
@@ -79,6 +84,10 @@ def pulsar_amqp_settings(params):
             f"//pulsar/{name}"
         ),
     )
+    # Directories between the storage root (/mnt, /data) and the staging directory, which
+    # stay root's so that the pulsar user cannot swap the staging directory for a link.
+    parts = settings["jobs_directory"].split("/")
+    settings["staging_parents"] = ["/".join(parts[:end]) for end in range(3, len(parts))]
     settings["galaxy_entry"] = _galaxy_entry(settings)
     return settings
 
@@ -159,6 +168,7 @@ def pulsar_amqp_errors(settings):
     for key, parameter in (
         ("docker_enabled", "pulsar_docker"),
         ("singularity_enabled", "pulsar_apptainer"),
+        ("cvmfs", "pulsar_cvmfs"),
     ):
         if not isinstance(settings[key], bool):
             errors.append(f"{parameter} must be true or false, got '{settings[key]}'")

@@ -9,6 +9,8 @@ import datetime
 import importlib.util
 import socket
 import ssl
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -77,9 +79,16 @@ class CheckResultTest(unittest.TestCase):
 
         self.assertResult(run_check(channel, conf=conf), check_amqp.OK, "pulsar_gpu__setup")
 
-    def test_retry_status_is_not_pythons_own(self):
-        # Python exits 2 when it cannot run the script; that must not be retried.
-        self.assertNotIn(check_amqp.RETRY, (0, 1, 2))
+    def test_a_broken_run_is_not_retried(self):
+        # Python exits 2 when it cannot run the script and 1 on an exception; only the
+        # check's own "not yet" status may be retried.
+        for argv in (
+            [str(REPO / "files" / "check_amqp.py"), "/nonexistent/app.yml"],
+            [str(REPO / "files" / "no_such_check.py"), "/nonexistent/app.yml"],
+        ):
+            with self.subTest(argv=argv):
+                result = subprocess.run([sys.executable, *argv], capture_output=True, check=False)  # noqa: S603 - fixed argv
+                self.assertNotIn(result.returncode, (check_amqp.OK, check_amqp.RETRY))
 
     def test_queue_without_consumer_is_retried(self):
         self.assertResult(run_check(FakeChannel(result=0)), check_amqp.RETRY, "pulsar__setup")

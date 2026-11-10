@@ -36,8 +36,8 @@
     # Docker Engine for docker_enabled Galaxy environments.
     - role: geerlingguy.docker
       when: _pulsar_amqp.docker_enabled
-    # Galaxy's CVMFS repositories (reference data and Singularity images under
-    # /cvmfs), with the same role and settings as the SRC Galaxy component.
+    # Galaxy's CVMFS repositories (reference data under /cvmfs), with the same role
+    # and settings as the SRC Galaxy component.
     - role: galaxyproject.cvmfs
       when: _pulsar_cvmfs | bool
 

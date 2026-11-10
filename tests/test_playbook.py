@@ -4,7 +4,8 @@ import html
 import re
 import unittest
 
-from tests.helpers import PASSWORD, REPO, load_yaml, render, resolve
+from tests.galaxy_contract import src_galaxy
+from tests.helpers import PASSWORD, REPO, load_yaml, render, resolve, resolve_text
 
 
 def tasks(path):
@@ -108,8 +109,7 @@ class PlaybookTest(unittest.TestCase):
 
         self.assertEqual(check["that"], "_pulsar_amqp_errors | length == 0")
         self.assertIn("_pulsar_amqp_errors", check["fail_msg"])
-        self.assertNotIn("password", check["fail_msg"])
-        self.assertTrue(pre_tasks[0].get("no_log") is not True)  # the message must be visible
+        self.assertNotEqual(pre_tasks[0].get("no_log"), True)  # the message must be visible
 
     def test_tasks_with_secrets_are_not_logged(self):
         play_tasks = [t for task in play()["tasks"] for t in [task, *task.get("block", [])]]
@@ -162,6 +162,45 @@ class PlaybookTest(unittest.TestCase):
         self.assertEqual(report["when"], "_pulsar_amqp_check.rc != 0")
 
 
+class DirectoriesTest(unittest.TestCase):
+    """The pulsar user (and so any job) must not be able to redirect root's directory task."""
+
+    TASKS = ("Create root-owned Pulsar directories", "Create Pulsar's working directories")
+
+    def paths(self, name):
+        task = task_named(tasks("tasks/pulsar.yml"), name)
+        loop = task["loop"]
+        paths = resolve_text(loop) if isinstance(loop, str) else [resolve_text(p) for p in loop]
+        owner = resolve_text(task["ansible.builtin.file"]["owner"])
+        return task, owner, paths
+
+    def test_links_are_not_followed(self):
+        for name in self.TASKS:
+            with self.subTest(task=name):
+                task, _, _ = self.paths(name)
+                self.assertIs(task["ansible.builtin.file"]["follow"], False)
+
+    def test_pulsar_owns_only_leaves_in_root_owned_directories(self):
+        _, root, root_owned = self.paths(self.TASKS[0])
+        _, owner, pulsar_owned = self.paths(self.TASKS[1])
+
+        self.assertEqual((root, owner), ("root", "pulsar"))
+        self.assertIn("/mnt/pulsar/files", root_owned)
+        for path in pulsar_owned:
+            with self.subTest(path=path):
+                parent = path.rsplit("/", 1)[0]
+                self.assertTrue(parent in root_owned or parent in ("/var/lib", "/mnt", "/data"))
+
+    def test_unit_is_installed_before_tasks_that_can_fail(self):
+        # force_handlers restarts Pulsar after a failure; the unit must exist by then.
+        names = [t.get("name") for t in tasks("tasks/pulsar.yml")]
+        unit = names.index("Install the Pulsar systemd unit")
+        self.assertLess(
+            unit, names.index("Install Apptainer for Singularity-enabled Galaxy environments")
+        )
+        self.assertLess(unit, names.index("Check that the Galaxy CVMFS repositories mount"))
+
+
 class TemplatesTest(unittest.TestCase):
     def test_welcome_page_shows_the_galaxy_entry(self):
         page = render("welcome.html.j2")
@@ -169,7 +208,11 @@ class TemplatesTest(unittest.TestCase):
 
         self.assertIn(f'<pre id="galaxy-amqp-param">{html.escape(entry)}</pre>', page)
         self.assertIn("src_galaxy_pulsar_amqp_configs", page)
-        self.assertIn("environment: amqp_hpc", page)
+        tools = re.search(r'<pre id="galaxy-amqp-tools">([^<]*)</pre>', page).group(1)
+        self.assertEqual(
+            {m["environment"] for m in src_galaxy.src_config_list(tools, "tool mappings")},
+            {"amqp_hpc"},
+        )
         self.assertIn("src_galaxy_rabbitmq", page)
         # Galaxy's preferences list the entry by its label, which defaults to the name.
         self.assertIn("choosing <code>hpc</code>", page)

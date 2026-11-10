@@ -155,6 +155,33 @@ def galaxy_web_client_requirement(version):
     return f"galaxy-web-client=={version}"
 
 
+# --- saved component parameters for continuous deployment (issue #22) ------------
+
+# The Ansible Vault password (#21) is the key of the vault, so it is never saved again.
+CD_EXCLUDED_PARAMS = frozenset({"src_galaxy_vault_password"})
+_SECRET_WORD = r"password|secret|token|passphrase|private_key"  # noqa: S105 - a pattern
+_SECRET_NAME = re.compile(_SECRET_WORD, re.IGNORECASE)
+# A secret-looking key inside a value, e.g. `private_token:` in an SRC flow-style list.
+_SECRET_KEY = re.compile(rf"[\w-]*(?:{_SECRET_WORD})[\w-]*[\"']?\s*:", re.IGNORECASE)
+
+
+def src_cd_params(params):
+    """Split component parameters into ``plain`` and ``secret`` ones for galaxy-cd.
+
+    A parameter is secret if its name, or a key inside its value, looks like a password,
+    secret, token, passphrase or private key; such parameters are only stored
+    vault-encrypted. ``src_galaxy_vault_password`` is dropped.
+    """
+    plain, secret = {}, {}
+    for name, value in params.items():
+        if name in CD_EXCLUDED_PARAMS:
+            continue
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        target = secret if _SECRET_NAME.search(name) or _SECRET_KEY.search(text) else plain
+        target[name] = value
+    return {"plain": plain, "secret": secret}
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -162,4 +189,5 @@ class FilterModule:
             "pulsar_amqp_configs": pulsar_amqp_configs,
             "pulsar_amqp_config_errors": pulsar_amqp_config_errors,
             "galaxy_web_client_requirement": galaxy_web_client_requirement,
+            "src_cd_params": src_cd_params,
         }

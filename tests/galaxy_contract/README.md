@@ -1,7 +1,7 @@
 # Vendored Galaxy contract
 
 Verbatim copies from [mirelaminkova/src-component-galaxy-amqp](https://github.com/mirelaminkova/src-component-galaxy-amqp)
-at commit `e13e0a807b9ba339f48a65d3e13d6e35bae8e1e2`:
+at commit `c5a5acfb29114aea84a90712d638463bfaaeb5a6`:
 
 | File here | File in the Galaxy repository |
 | --- | --- |

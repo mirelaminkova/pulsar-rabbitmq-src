@@ -7,3 +7,6 @@ amqp==5.3.1
 vine==5.1.0
 requests==2.34.2
 PyYAML==6.0.3
+# Galaxy's own packages that the client imports (in Galaxy's source tree, on PyPI separately).
+galaxy-util==26.1.2
+galaxy-tool-util==26.1.2

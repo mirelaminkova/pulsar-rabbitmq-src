@@ -68,7 +68,7 @@ def test_component_parameters_map_onto_galaxy():
         "pulsar_amqp_name",
         "pulsar_amqp_password",
         "pulsar_manager",
-        "pulsar_staging_dir",
+        "pulsar_storage_path",
         "pulsar_cvmfs",
         "pulsar_docker",
         "pulsar_apptainer",
@@ -89,7 +89,13 @@ def test_parameter_defaults_agree_with_group_vars(name):
     parameters = {
         key: value
         for key, value in load_yaml("parameters.yml").items()
-        if key not in ("pulsar_galaxy_fqdn", "pulsar_amqp_name", "pulsar_amqp_password")
+        if key
+        not in (
+            "pulsar_galaxy_fqdn",
+            "pulsar_amqp_name",
+            "pulsar_amqp_password",
+            "pulsar_storage_path",
+        )
     }
     defaults = {key: group_vars[key] for key in parameters}
     assert resolve(name, **parameters) == resolve(name, **defaults)
@@ -199,12 +205,13 @@ def test_pulsar_owns_only_leaves_in_root_owned_directories():
     _, root, root_owned = directory_paths(DIRECTORY_TASKS[0])
     _, owner, pulsar_owned = directory_paths(DIRECTORY_TASKS[1])
 
+    storage = task_named(tasks("tasks/storage.yml"), "Create the root-owned storage directory")
+    root_owned.append(resolve_text(storage["ansible.builtin.file"]["path"]))
+
     assert (root, owner) == ("root", "pulsar")
-    assert "/mnt/pulsar/files" in root_owned
     assert pulsar_owned
     for path in pulsar_owned:
-        parent = path.rsplit("/", 1)[0]
-        assert parent in root_owned or parent in ("/var/lib", "/mnt", "/data"), path
+        assert path.rsplit("/", 1)[0] in root_owned, path
 
 
 def test_unit_is_installed_before_tasks_that_can_fail():

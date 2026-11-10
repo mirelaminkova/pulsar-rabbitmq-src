@@ -26,8 +26,12 @@ import yaml
 from pulsar.core import PulsarApp
 from pulsar.managers import status
 
-# What the job reports about itself: user, Slurm job, working directory.
-COMMAND = 'echo "user=$(id -un) slurm_job=${SLURM_JOB_ID:-none} cwd=$PWD"'
+# What the job reports about itself: user, Slurm job, working directory, and where its
+# temporary files and Apptainer images go.
+COMMAND = (
+    'echo "user=$(id -un) slurm_job=${SLURM_JOB_ID:-none} cwd=$PWD'
+    ' tmp=${TMPDIR:-none} apptainer_cache=${APPTAINER_CACHEDIR:-none}"'
+)
 CONTAINER_CONFIG = 'printf \'{"container_name": "%s"}\' {name} > ../configs/container_config.json'
 
 

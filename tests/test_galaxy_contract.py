@@ -41,7 +41,7 @@ PARAMS = [
     pytest.param(
         {
             "pulsar_manager": "gpu",
-            "pulsar_staging_dir": "/data/volume_2/staging",
+            "pulsar_storage_path": "/data/volume_2/pulsar",
             "pulsar_amqp_port": "15671",
             "pulsar_amqp_name": "eu_hpc-2",
         },

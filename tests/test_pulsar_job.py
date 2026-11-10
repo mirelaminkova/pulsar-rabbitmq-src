@@ -22,9 +22,9 @@ def app_yml(tmp_path):
     text = render(
         "pulsar-app.yml.j2",
         pulsar_job_runner="local",
-        pulsar_staging_dir="/mnt/live/test/staging",
+        pulsar_storage_path="/data/live/test",
         pulsar_config_dir=str(tmp_path),
-    ).replace("/mnt/live/test/staging", str(tmp_path / "staging"))
+    ).replace("/data/live/test", str(tmp_path))
     path = tmp_path / "app.yml"
     path.write_text(text)
     return path
@@ -39,6 +39,10 @@ def test_runs_a_job_through_the_manager_without_a_broker(app_yml, monkeypatch, t
     assert (result["status"], result["return_code"]) == ("complete", 0)
     assert result["user"] == getpass.getuser()
     assert result["slurm_job"] == "none"
+    # Where the job's temporary files and Apptainer images go: under Slurm, the storage
+    # (task prolog); Pulsar's own jobs get a TMPDIR and drop APPTAINER_CACHEDIR.
+    assert result["tmp"] not in ("", "none")
+    assert result["apptainer_cache"] == "none"
     working = Path(result["cwd"])
     assert working.name == "working"
     assert working.parent.parent == tmp_path / "staging"

@@ -1,0 +1,139 @@
+---
+# Pulsar's data lives on the workspace's attached storage (pulsar_storage_path), never
+# on the root disk. Runs in pre_tasks: before Docker, CVMFS or Pulsar are installed.
+
+# Separate mounted volume, no symbolic links, not the mount point itself, root's,
+# writable; see files/check_storage.py. Exit status 1 comes with the reason on stdout.
+# --protect sets the sticky bit on a volume root that other users can write to.
+- name: Check that the storage path is on an attached volume
+  ansible.builtin.script: >-
+    files/check_storage.py {{ '' if ansible_check_mode else '--protect' }}
+    {{ '--docker' if _pulsar_amqp.docker_enabled else '' }}
+    {{ _pulsar_amqp.storage_path | quote }}
+  args:
+    executable: /usr/bin/python3
+  register: _pulsar_storage_check
+  changed_when: "'set the sticky bit' in _pulsar_storage_check.stdout | default('')"
+  failed_when: false
+  # Runs in check mode too: without --protect it only creates and removes a probe file.
+  check_mode: false
+
+# Also when the script could not run at all (no rc then).
+- name: Fail when the storage path is unusable
+  ansible.builtin.fail:
+    msg: >-
+      {{ [_pulsar_storage_check.stdout | default(''), _pulsar_storage_check.stderr | default(''),
+          _pulsar_storage_check.msg | default('')] | map('trim') | select | join(' ') }}
+  when: _pulsar_storage_check.rc | default(1) != 0
+
+# Root's, so that the pulsar user cannot swap its directories below it for links.
+# Links are not followed, so a link put here after the check fails the task.
+- name: Create the root-owned storage directory
+  ansible.builtin.file:
+    path: "{{ _pulsar_amqp.storage_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+
+- name: Create the root-only directory of the storage check
+  ansible.builtin.file:
+    path: "{{ pulsar_storage_check_script | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+
+- name: Install the storage check for the start of Pulsar, Docker and slurmd
+  ansible.builtin.copy:
+    src: files/check_storage.py
+    dest: "{{ pulsar_storage_check_script }}"
+    owner: root
+    group: root
+    mode: '0755'
+
+# slurmd (root) keeps job scripts and running jobs' state here.
+- name: Create slurmd's spool directory on the storage
+  ansible.builtin.file:
+    path: "{{ pulsar_slurmd_spool_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  when: _pulsar_slurm | bool
+
+# Without the volume (not attached at boot), Docker and slurmd would write their data
+# to the empty mount point on the root disk. The check refuses to start them without
+# the volume, and they keep trying (docker.service alone would give up after three
+# attempts). No RequiresMountsFor: a failed or late mount would fail their start as a
+# dependency, which Restart= does not retry.
+- name: Create the unit drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.unit }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop: "{{ _pulsar_storage_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  when: item.enabled | bool
+
+- name: Start Docker and slurmd only with the storage mounted
+  ansible.builtin.template:
+    src: templates/storage-dropin.conf.j2
+    dest: "/etc/systemd/system/{{ item.unit }}.service.d/pulsar-storage.conf"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ _pulsar_storage_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  when: item.enabled | bool
+  # Handlers notified in pre_tasks run before the roles, so before Docker and slurmd start.
+  notify: Reload systemd units
+
+# Docker or Slurm installed earlier stays; it must not keep checking an old path.
+- name: Remove the storage condition of units Pulsar no longer uses
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.unit }}.service.d/pulsar-storage.conf"
+    state: absent
+  loop: "{{ _pulsar_storage_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  when: not item.enabled | bool
+  notify: Reload systemd units
+
+# Before geerlingguy.docker installs Docker, whose package starts dockerd at once: with
+# the role's own daemon.json already there, Docker never writes to the root disk.
+- name: Create Docker's configuration directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: _pulsar_amqp.docker_enabled
+
+# A Docker installed earlier (an upgrade, a new storage path, a preinstalled Docker)
+# moves to the storage through the handler; the role then finds daemon.json unchanged
+# and would restart nothing. Its running containers stop.
+- name: Find an installed Docker
+  ansible.builtin.stat:
+    path: /usr/bin/dockerd
+  register: _pulsar_dockerd
+  when: _pulsar_amqp.docker_enabled
+
+- name: Put Docker's data on the storage before Docker is installed
+  ansible.builtin.copy:
+    # As geerlingguy.docker writes it, so that the role finds nothing to change.
+    content: "{{ docker_daemon_options | to_nice_json }}"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: '0644'
+  when: _pulsar_amqp.docker_enabled
+  notify: Restart an installed Docker onto the storage

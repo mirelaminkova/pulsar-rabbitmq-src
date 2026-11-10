@@ -3,29 +3,15 @@
 Validation must accept exactly what Galaxy's parser accepts for the same values
 (vendored in tests/galaxy_contract/src_galaxy.py), so a deployment that passes
 here cannot be rejected by the Galaxy component, and vice versa, apart from the
-documented stricter rules for the staging directory and the Galaxy hostname.
+documented stricter rule for the Galaxy hostname. The storage path (and the
+jobs_directory derived from it) is tested in tests/test_storage.py.
 """
 
 import pytest
 
-from filter_plugins.pulsar_amqp import pulsar_amqp_errors, pulsar_amqp_settings
+from filter_plugins.pulsar_amqp import pulsar_amqp_errors
 from tests.galaxy_contract import src_galaxy
-from tests.helpers import PASSWORD, resolve
-
-BASE = {
-    "galaxy_fqdn": "galaxy.example.org",
-    "port": "5671",
-    "name": "hpc",
-    "password": PASSWORD,
-    "manager": "_default_",
-    "jobs_directory": "/mnt/pulsar/files/staging",
-    "docker_enabled": "true",
-    "singularity_enabled": "true",
-}
-
-
-def settings(**overrides):
-    return pulsar_amqp_settings({**BASE, **overrides})
+from tests.helpers import PASSWORD, resolve, settings
 
 
 def galaxy_errors(entry_text):
@@ -38,11 +24,10 @@ def galaxy_errors(entry_text):
 
 def test_unset_parameters_get_galaxys_defaults():
     # SRC passes an unset parameter as an empty string.
-    result = settings(port="", manager="", jobs_directory="  ")
+    result = settings(port="", manager="")
 
     assert result["port"] == 5671
     assert result["manager"] == src_galaxy.AMQP_DEFAULTS["manager"]
-    assert result["jobs_directory"] == src_galaxy.AMQP_DEFAULTS["jobs_directory"]
     assert pulsar_amqp_errors(result) == []
 
 
@@ -50,7 +35,6 @@ def test_empty_optional_parameters_get_defaults():
     result = settings(
         port="",
         manager="",
-        jobs_directory="",
         docker_enabled="",
         singularity_enabled="",
         cvmfs="",
@@ -60,16 +44,6 @@ def test_empty_optional_parameters_get_defaults():
     assert result["docker_enabled"] is False
     assert result["singularity_enabled"] is True
     assert result["cvmfs"] is True
-
-
-def test_staging_parents_are_listed_below_the_storage_root():
-    assert settings(jobs_directory="/mnt/pulsar/files/staging")["staging_parents"] == [
-        "/mnt/pulsar",
-        "/mnt/pulsar/files",
-    ]
-    assert settings(jobs_directory="/data/volume_2/staging")["staging_parents"] == [
-        "/data/volume_2"
-    ]
 
 
 def test_derived_names_follow_galaxy():
@@ -105,9 +79,9 @@ def test_valid():
 
 
 def test_required_values():
-    errors = pulsar_amqp_errors(settings(galaxy_fqdn="", name="", password=""))
+    errors = pulsar_amqp_errors(settings(galaxy_fqdn="", name="", password="", storage_path=""))
 
-    assert len(errors) == 3, errors
+    assert len(errors) == 4, errors
     assert all("required" in error for error in errors), errors
 
 
@@ -147,39 +121,6 @@ def test_password_is_never_echoed(value):
     errors = pulsar_amqp_errors(settings(password=value))
     assert len(errors) == 1, errors
     assert value not in " ".join(errors)
-
-
-# Galaxy accepts any absolute path without spaces; Pulsar would own it, so
-# system directories and characters the SRC one-line format breaks on are refused.
-# Only below /mnt or /data (SRC storage), at least three levels deep, so neither a
-# system directory nor Pulsar's own installation can become the pulsar user's.
-@pytest.mark.parametrize(
-    "value",
-    [
-        "/",
-        "/mnt",
-        "/mnt/pulsar",
-        "/data/volume_2",
-        "/var/lib",
-        "/opt/pulsar",
-        "/opt/pulsar/config",
-        "/var/lib/pulsar/x",
-        "/etc/pulsar/staging",
-        "/mnt/../etc/x",
-        "/mnt/a/../b",
-        "/mnt/./a/b",
-        "/mnt/a/b,c",
-        "/mnt/a/{b}",
-        "relative/dir/x",
-    ],
-)
-def test_staging_directory_is_stricter_than_galaxy(value):
-    assert_invalid("pulsar_staging_dir", jobs_directory=value)
-
-
-@pytest.mark.parametrize("value", ["/mnt/pulsar/files/staging", "/data/volume_2/staging"])
-def test_valid_staging_directory(value):
-    assert pulsar_amqp_errors(settings(jobs_directory=value)) == []
 
 
 @pytest.mark.parametrize(
@@ -263,7 +204,7 @@ def test_galaxy_parses_the_entry_without_errors():
 def test_galaxy_derives_the_same_connection():
     result = settings(
         manager="gpu",
-        jobs_directory="/data/volume_2/staging",
+        storage_path="/data/volume_2/pulsar",
         docker_enabled="false",
         singularity_enabled="true",
     )
@@ -273,7 +214,7 @@ def test_galaxy_derives_the_same_connection():
     assert config["password"] == PASSWORD
     assert config["vhost"] == result["vhost"]
     assert config["manager"] == "gpu"
-    assert config["jobs_directory"] == "/data/volume_2/staging"
+    assert config["jobs_directory"] == "/data/volume_2/pulsar/staging"
     assert config["singularity_enabled"] is True
     assert config["docker_enabled"] is False
 
@@ -305,7 +246,7 @@ def test_group_vars_build_the_settings_from_the_component_parameters():
     result = resolve("_pulsar_amqp")
 
     assert result["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
-    assert result["jobs_directory"] == "/mnt/pulsar/files/staging"
+    assert result["jobs_directory"] == "/data/pulsar_storage/pulsar/staging"
     assert resolve("_pulsar_amqp_errors") == []
 
 
@@ -313,10 +254,3 @@ def test_group_vars_report_missing_parameters():
     errors = resolve("_pulsar_amqp_errors", pulsar_galaxy_fqdn="", pulsar_amqp_password="")
 
     assert len(errors) == 2, errors
-
-
-def test_empty_staging_parameter_keeps_the_default():
-    assert (
-        resolve("_pulsar_amqp", pulsar_staging_dir="")["jobs_directory"]
-        == "/mnt/pulsar/files/staging"
-    )

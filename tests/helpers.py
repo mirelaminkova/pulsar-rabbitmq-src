@@ -12,6 +12,8 @@ from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.loader import add_all_plugin_dirs
 from ansible.template import Templar
 
+from filter_plugins.pulsar_amqp import pulsar_amqp_settings
+
 REPO = Path(__file__).resolve().parents[1]
 GALAXY_CONTRACT = REPO / "tests" / "galaxy_contract"
 
@@ -39,7 +41,7 @@ PARAMS = {
     "pulsar_amqp_name": "hpc",
     "pulsar_amqp_password": PASSWORD,
     "pulsar_manager": "_default_",
-    "pulsar_staging_dir": "/mnt/pulsar/files/staging",
+    "pulsar_storage_path": "/data/pulsar_storage/pulsar",
     "pulsar_cvmfs": "true",
     "pulsar_job_runner": "slurm",
 }
@@ -94,3 +96,27 @@ def play():
 def task_named(task_list, name):
     [task] = [t for t in task_list if t.get("name") == name]
     return task
+
+
+def condition(expression, **variables):
+    """Evaluate a task's ``when`` expression with ``variables``. Unlike Ansible, the
+    result goes through ``| bool``; fine for expressions that yield booleans."""
+    return templar(**variables).template(f"{{{{ ({expression}) | bool }}}}", convert_data=True)
+
+
+# The filter's parameters (not group_vars') for a valid Pulsar.
+BASE = {
+    "galaxy_fqdn": PARAMS["pulsar_galaxy_fqdn"],
+    "port": PARAMS["pulsar_amqp_port"],
+    "name": PARAMS["pulsar_amqp_name"],
+    "password": PARAMS["pulsar_amqp_password"],
+    "manager": PARAMS["pulsar_manager"],
+    "storage_path": PARAMS["pulsar_storage_path"],
+    "docker_enabled": "true",
+    "singularity_enabled": "true",
+}
+
+
+def settings(**overrides):
+    """pulsar_amqp_settings of BASE with ``overrides``."""
+    return pulsar_amqp_settings({**BASE, **overrides})

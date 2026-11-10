@@ -17,10 +17,9 @@ from pulsar.manager_factory import build_managers
 from pulsar.managers.queued import QueueManager
 from pulsar.managers.queued_drmaa import DrmaaQueueManager
 
-from filter_plugins.pulsar_amqp import pulsar_amqp_errors, pulsar_amqp_settings
+from filter_plugins.pulsar_amqp import pulsar_amqp_errors
 from tests.helpers import (
     FACTS,
-    PARAMS,
     REPO,
     load_yaml,
     play,
@@ -28,6 +27,7 @@ from tests.helpers import (
     render_yaml,
     resolve,
     resolve_text,
+    settings,
     task_named,
     tasks,
     templar,
@@ -35,17 +35,6 @@ from tests.helpers import (
 
 DRMAA_LIBRARY = "/usr/lib/slurm-drmaa/lib/libdrmaa.so.1"
 OMIT = FACTS["omit"]
-
-
-BASE = {
-    "galaxy_fqdn": PARAMS["pulsar_galaxy_fqdn"],
-    "name": PARAMS["pulsar_amqp_name"],
-    "password": PARAMS["pulsar_amqp_password"],
-}
-
-
-def settings(**overrides):
-    return pulsar_amqp_settings({**BASE, **overrides})
 
 
 # --- Parameter ---------------------------------------------------------------
@@ -267,6 +256,12 @@ def test_slurm_conf_as_the_role_writes_it(docker, ubuntu):
     assert "DefMemPerCPU=3600" in lines
     assert "MinJobAge=14400" in lines
     assert ("Epilog=/etc/slurm/epilog.sh" in lines) is (docker == "true")
+    # Job files on the storage; the controller's state stays where the role puts it.
+    assert "SlurmdSpoolDir=/data/pulsar_storage/pulsar/slurmd" in lines
+    assert "TmpFS=/data/pulsar_storage/pulsar/job_tmp" in lines
+    assert "TaskProlog=/etc/slurm/task_prolog.sh" in lines
+    assert "TaskEpilog=/etc/slurm/task_epilog.sh" in lines
+    assert "StateSaveLocation=/var/lib/slurm/slurmctld" in lines
     assert not [line for line in lines if OMIT in line]
     # The epilog lives in the role's slurm_config_dir on both Ubuntu releases.
     assert env.template("{{ slurm_config_dir }}") == str(
@@ -291,7 +286,7 @@ def test_slurm_is_set_up_before_pulsar_and_stopped_for_local():
 
 def test_pulsar_restarts_for_a_new_manager_type_or_unit_environment():
     pulsar = tasks("tasks/pulsar.yml")
-    [handler] = play()["handlers"]
+    handler = task_named(play()["handlers"], "Restart Pulsar")
 
     for name in (
         "Write Pulsar's app.yml with the Galaxy broker connection",  # manager type

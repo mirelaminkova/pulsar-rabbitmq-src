@@ -1,11 +1,6 @@
-.env
-secrets.json
-.secrets/
-.policy/
 *.tmp
 .venv/
-.test-deps/
 __pycache__/
 *.pyc
 .ansible/
-.local-test/
+.galaxy-amqp/

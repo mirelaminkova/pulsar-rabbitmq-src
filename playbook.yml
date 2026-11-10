@@ -1,29 +1,17 @@
 ---
-- name: Install Pulsar Relay on SURF Research Cloud
+- name: Install Pulsar for the Galaxy component's RabbitMQ on SURF Research Cloud
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   become: true
+  # Restart Pulsar for a changed app.yml or venv even when a later task fails; a rerun
+  # would not see the change again and would leave the old Pulsar running.
+  force_handlers: true
   pre_tasks:
-    - name: Validate CO group and installation path
+    # The rules of the Galaxy component's parser, in filter_plugins/pulsar_amqp.py.
+    - name: Validate the component parameters
       ansible.builtin.assert:
-        that:
-          - relay_admin_co_group is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-          - relay_install_dir is match('^/[A-Za-z0-9_./-]+$')
-          - relay_welcome_dir is match('^/[A-Za-z0-9_./-]+$')
-          - relay_pair_username is match('^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$')
-          - relay_topic_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
-          - (relay_pair_password | default('', true) | length == 0) or
-            (relay_pair_password is match('^[A-Za-z0-9._~+=@%-]{16,128}$'))
-          - relay_port | string is match('^[0-9]{4,5}$')
-          - _relay_pulsar_root is match('^/[A-Za-z0-9_./-]+$')
-        fail_msg: >-
-          Check the component parameters: CO group, paths, pair username (3-50 of A-Z a-z 0-9 . _ -),
-          topic prefix, pair password (empty, or 16-128 of A-Z a-z 0-9 . _ ~ + = @ % -),
-          relay port (digits), and relay_pulsar_root (empty, or an absolute path).
-
-    - name: Set workspace user and CO group facts as in the Galaxy component
-      ansible.builtin.include_role:
-        name: uusrc.general.fact_regular_users
-      when: relay_configure_src_proxy | bool
+        that: _pulsar_amqp_errors | length == 0
+        fail_msg: "Check the component parameters: {{ _pulsar_amqp_errors | join('; ') }}"
+        quiet: true
 
     - name: Check supported workspace OS
       ansible.builtin.assert:
@@ -35,191 +23,53 @@
     - name: Check SRC nginx prerequisite
       ansible.builtin.stat:
         path: /etc/nginx/app-location-conf.d/authentication.conf
-      register: relay_nginx_prerequisite
-      when: relay_configure_src_proxy | bool
+      register: _pulsar_nginx_prerequisite
+      when: pulsar_configure_src_proxy | bool
 
-    - name: Require SRC-Nginx before installing the relay
+    - name: Require SRC-Nginx for the SRAM-protected welcome page
       ansible.builtin.assert:
-        that: relay_nginx_prerequisite.stat.exists
+        that: _pulsar_nginx_prerequisite.stat.exists
         fail_msg: Add SRC-Nginx before this component in the catalog item.
-      when: relay_configure_src_proxy | bool
+      when: pulsar_configure_src_proxy | bool
 
   roles:
-    - geerlingguy.docker
-    # Galaxy's CVMFS repositories for the co-located Pulsar (reference data and
-    # Singularity images under /cvmfs), with the same role and settings as the
-    # SRC Galaxy component, so both ends of a job see the same paths.
+    # Docker Engine for docker_enabled Galaxy environments.
+    - role: geerlingguy.docker
+      when: _pulsar_amqp.docker_enabled
+    # Galaxy's CVMFS repositories (reference data under /cvmfs), with the same role
+    # and settings as the SRC Galaxy component.
     - role: galaxyproject.cvmfs
-      when: _relay_pulsar_cvmfs | bool
+      when: _pulsar_cvmfs | bool
 
   tasks:
-    - name: Create component directories
-      ansible.builtin.file:
-        path: "{{ relay_install_dir }}/{{ item }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-      loop: ['', files, scripts, relay_src, .policy]
-
-    - name: Copy deployment files
-      ansible.builtin.copy:
-        src: "{{ item }}"
-        dest: "{{ relay_install_dir }}/{{ item }}"
-        owner: root
-        group: root
-        mode: "0644"
-      loop:
-        - Dockerfile
-        - .dockerignore
-        - compose.yml
-        - files/valkey.conf
-        - scripts/configure.py
-        - scripts/sync_admins.py
-        - relay_src/__init__.py
-        - relay_src/policy.py
-        - relay_src/pair.py
-        - relay_src/app.py
-      register: relay_deployment_files
-
-    - name: Generate and retain workspace credentials
-      ansible.builtin.command:
-        argv:
-          - python3
-          - "{{ relay_install_dir }}/scripts/configure.py"
-          - --directory
-          - "{{ relay_install_dir }}"
-          - --public-url
-          - "{{ relay_public_url }}"
-          - --port
-          - "{{ relay_port | string }}"
-          - --pair-username
-          - "{{ relay_pair_username }}"
-      environment:
-        RELAY_PAIR_PASSWORD: "{{ relay_pair_password | default('', true) }}"
-      register: relay_configuration
-      changed_when: relay_configuration.stdout == 'changed'
-      no_log: true
-
-    - name: Initialize administrator membership from the SRC CO facts
-      ansible.builtin.copy:
-        content: "{{ {'members': (fact_co_groups | default({})).get(relay_admin_co_group, []) | reject('equalto', '') | list, 'expires_at': (ansible_date_time.epoch | int) + 180} | to_json }}"
-        dest: "{{ relay_install_dir }}/.policy/admins.json"
-        owner: root
-        group: root
-        mode: '0644'
-      when: relay_configure_src_proxy | bool
-      no_log: true
-
-    - name: Refresh CO administrator membership from managed groups
-      ansible.builtin.command:
-        argv: [python3, "{{ relay_install_dir }}/scripts/sync_admins.py", --group, "{{ relay_admin_co_group }}", --directory, "{{ relay_install_dir }}/.policy"]
-      changed_when: false
-
-    - name: Install CO membership refresh service and timer
-      ansible.builtin.template:
-        src: "templates/admin-sync.{{ item }}.j2"
-        dest: "/etc/systemd/system/pulsar-relay-admin-sync.{{ item }}"
-        owner: root
-        group: root
-        mode: '0644'
-      loop: [service, timer]
-
-    - name: Enable periodic CO administrator membership refresh
-      ansible.builtin.systemd:
-        name: pulsar-relay-admin-sync.timer
-        daemon_reload: true
-        enabled: true
-        state: started
-
-    - name: Build and start the persistent relay services
-      community.docker.docker_compose_v2:
-        project_src: "{{ relay_install_dir }}"
-        project_name: pulsar-relay
-        state: present
-        build: "{{ 'always' if relay_deployment_files.changed else 'policy' }}"
-        recreate: "{{ 'always' if relay_configuration.changed else 'auto' }}"
-        wait: true
-        wait_timeout: 180
-      no_log: true
-
-    - name: Read deployment secrets without logging them
-      ansible.builtin.slurp:
-        src: "{{ relay_install_dir }}/secrets.json"
-      register: _relay_secrets_file
-      no_log: true
-
-    - name: Create the welcome page directory
-      ansible.builtin.file:
-        path: "{{ relay_welcome_dir }}"
-        state: directory
-        owner: root
-        group: www-data
-        mode: '0750'
-      when: relay_configure_src_proxy | bool
-
-    - name: Template the SRAM-protected welcome page with connection details
-      ansible.builtin.template:
-        src: templates/welcome.html.j2
-        dest: "{{ relay_welcome_dir }}/index.html"
-        owner: root
-        group: www-data
-        mode: '0640'
-      vars:
-        _relay_pair_password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
-      when: relay_configure_src_proxy | bool
-      no_log: true
-      diff: false
-
-    - name: Configure SRC HTTPS reverse proxy
-      ansible.builtin.include_role:
-        name: uusrc.general.nginx_reverse_proxy
-      when: relay_configure_src_proxy | bool
-
-    - name: Install SRAM-protected management location
-      when: relay_configure_src_proxy | bool
+    - name: Publish the SRAM-protected welcome page
+      when: pulsar_configure_src_proxy | bool
       block:
-        - name: Configure trusted SRAM identity forwarding
-          ansible.builtin.template:
-            src: templates/admin-location.conf.j2
-            dest: /etc/nginx/app-location-conf.d/pulsar-relay-admin.conf
-            owner: root
-            group: www-data
-            mode: '0640'
-          vars:
-            _relay_proxy_secret: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_SRC_PROXY_SECRET }}"
-          no_log: true
-          diff: false
-
-        - name: Protect nginx configuration as in the Galaxy component
+        - name: Create the welcome page directory
           ansible.builtin.file:
-            path: /etc/nginx/app-location-conf.d
+            path: "{{ pulsar_welcome_dir }}"
             state: directory
             owner: root
             group: www-data
             mode: '0750'
 
-        - name: Validate nginx configuration
-          ansible.builtin.command: nginx -t
-          changed_when: false
+        - name: Template the welcome page with the Galaxy parameter
+          ansible.builtin.template:
+            src: templates/welcome.html.j2
+            dest: "{{ pulsar_welcome_dir }}/index.html"
+            owner: root
+            group: www-data
+            mode: '0640'
+          no_log: true
+          diff: false
 
-        - name: Reload SRAM management configuration
-          ansible.builtin.service:
-            name: nginx
-            state: reloaded
+        - name: Configure the SRC HTTPS reverse proxy for the welcome page
+          ansible.builtin.include_role:
+            name: uusrc.general.nginx_reverse_proxy
 
-    - name: Check local relay readiness
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ relay_port }}/ready"
-        status_code: 200
-      register: relay_ready
-      retries: 12
-      delay: 5
-      until: relay_ready.status == 200
-
-    - name: Install Pulsar on this workspace, connected to the relay
+    # After the welcome page, so its Galaxy entry is available when the broker check fails.
+    - name: Install Pulsar and connect it to Galaxy's RabbitMQ
       ansible.builtin.include_tasks: tasks/pulsar.yml
-      when: relay_install_pulsar | bool
 
   handlers:
     - name: Restart Pulsar

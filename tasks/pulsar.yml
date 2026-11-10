@@ -1,58 +1,68 @@
 ---
-# Pulsar in relay mode on the relay workspace itself, modelled on
-# usegalaxy-eu/pulsar-nemo-login-role, with systemd instead of supervisord.
+# Pulsar as an AMQP client of the Galaxy component's RabbitMQ, webless, modelled on
+# usegalaxy-eu/pulsar-nemo-login-role with systemd instead of supervisord.
 - name: Install Python venv support for Pulsar
   ansible.builtin.apt:
-    name: [python3-venv, python3-dev, build-essential]
+    name: [python3-venv, python3-dev, build-essential, ca-certificates]
     state: present
     update_cache: true
 
 - name: Create the Pulsar system user
   ansible.builtin.user:
-    name: "{{ relay_pulsar_user }}"
+    name: "{{ pulsar_user }}"
     system: true
-    home: "{{ _relay_pulsar_root }}"
+    home: "{{ pulsar_home }}"
     create_home: false
     shell: /usr/sbin/nologin
-    groups: "{{ ['docker'] if relay_pulsar_docker | bool else omit }}"
+    groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
     append: true
 
-- name: Create Pulsar directories
+# Every directory the pulsar user owns sits in a root-owned one, and links are not
+# followed: otherwise a job could swap a directory for a link to, say, the venv,
+# and the next run (as root) would hand that to the pulsar user.
+- name: Create root-owned Pulsar directories
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ item.owner }}"
-    group: "{{ item.owner }}"
-    mode: "{{ item.mode }}"
+    owner: root
+    group: root
+    mode: '0755'
+    follow: false
+  loop: "{{ [pulsar_venv | dirname, pulsar_config_dir, pulsar_data_dir] + _pulsar_amqp.staging_parents }}"
+
+- name: Create Pulsar's working directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ pulsar_user }}"
+    group: "{{ pulsar_user }}"
+    mode: '0750'
+    follow: false
   loop:
-    - {path: "{{ relay_pulsar_venv | dirname }}", owner: root, mode: '0755'}
-    - {path: "{{ relay_pulsar_config_dir }}", owner: root, mode: '0755'}
-    - {path: "{{ _relay_pulsar_root }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
-    - {path: "{{ relay_pulsar_staging_dir }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
-    - {path: "{{ relay_pulsar_persistence_dir }}", owner: "{{ relay_pulsar_user }}", mode: '0750'}
+    - "{{ pulsar_home }}"
+    - "{{ pulsar_persistence_dir }}"
+    - "{{ _pulsar_amqp.jobs_directory }}"
 
 # No `creates:`, so a version change in group_vars upgrades the venv.
-- name: Install pulsar-app and the relay client into the venv
+# The amqp extra installs kombu, which Pulsar needs for pyamqp:// message queues.
+- name: Install pulsar-app with AMQP support into the venv
   ansible.builtin.pip:
     name:
-      - "pulsar-app=={{ relay_pulsar_version }}"
-      - "pulsar-relay-client=={{ relay_pulsar_relay_client_version }}"
+      - "pulsar-app[amqp]=={{ pulsar_version }}"
       - psutil
-    virtualenv: "{{ relay_pulsar_venv }}"
+    virtualenv: "{{ pulsar_venv }}"
     # Absolute path: SRC runs Ansible through `uv run`, whose own python3 may
     # come first on PATH and is not usable by the pulsar system user.
     virtualenv_command: /usr/bin/python3 -m venv
   notify: Restart Pulsar
 
-- name: Write Pulsar's app.yml with the relay connection
+- name: Write Pulsar's app.yml with the Galaxy broker connection
   ansible.builtin.template:
     src: templates/pulsar-app.yml.j2
-    dest: "{{ relay_pulsar_config_dir }}/app.yml"
+    dest: "{{ pulsar_config_dir }}/app.yml"
     owner: root
-    group: "{{ relay_pulsar_user }}"
+    group: "{{ pulsar_user }}"
     mode: '0640'
-  vars:
-    _relay_pair_password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
   no_log: true
   diff: false
   notify: Restart Pulsar
@@ -60,7 +70,7 @@
 - name: Write Pulsar's logging configuration
   ansible.builtin.copy:
     src: templates/pulsar-server.ini
-    dest: "{{ relay_pulsar_config_dir }}/server.ini"
+    dest: "{{ pulsar_config_dir }}/server.ini"
     owner: root
     group: root
     mode: '0644'
@@ -68,7 +78,7 @@
 
 - name: Write Pulsar's job metrics configuration
   ansible.builtin.copy:
-    dest: "{{ relay_pulsar_config_dir }}/job_metrics_conf.xml"
+    dest: "{{ pulsar_config_dir }}/job_metrics_conf.xml"
     owner: root
     group: root
     mode: '0644'
@@ -82,22 +92,15 @@
       </job_metrics>
   notify: Restart Pulsar
 
-- name: Install Apptainer for Singularity-enabled Galaxy environments
-  ansible.builtin.include_tasks: tasks/apptainer.yml
-  when: relay_pulsar_apptainer | bool
+- name: Install the broker connection check
+  ansible.builtin.copy:
+    src: files/check_amqp.py
+    dest: "{{ pulsar_check_script }}"
+    owner: root
+    group: root
+    mode: '0755'
 
-# autofs mounts a repository on first access; this proves the client works
-# (keys, stratum 1 reachable) before Galaxy's first job depends on it.
-- name: Check that the Galaxy CVMFS repositories mount
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  register: _relay_cvmfs_repositories
-  failed_when: not _relay_cvmfs_repositories.stat.exists
-  loop:
-    - /cvmfs/data.galaxyproject.org/managed/location/tool_data_table_conf.xml
-    - /cvmfs/singularity.galaxyproject.org/all
-  when: _relay_pulsar_cvmfs | bool
-
+# Before the tasks that can fail: force_handlers then restarts an existing unit.
 - name: Install the Pulsar systemd unit
   ansible.builtin.template:
     src: templates/pulsar.service.j2
@@ -106,6 +109,21 @@
     group: root
     mode: '0644'
   notify: Restart Pulsar
+
+- name: Install Apptainer for Singularity-enabled Galaxy environments
+  ansible.builtin.include_tasks: tasks/apptainer.yml
+  when: _pulsar_amqp.singularity_enabled
+
+# autofs mounts a repository on first access; this proves the client works
+# (keys, stratum 1 reachable) before Galaxy's first job depends on it.
+- name: Check that the Galaxy CVMFS repositories mount
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: _pulsar_cvmfs_repositories
+  failed_when: not _pulsar_cvmfs_repositories.stat.exists
+  loop:
+    - /cvmfs/data.galaxyproject.org/managed/location/tool_data_table_conf.xml
+  when: _pulsar_cvmfs | bool
 
 - name: Enable and start Pulsar
   ansible.builtin.systemd:
@@ -117,35 +135,23 @@
 - name: Apply pending Pulsar restarts before checking the connection
   ansible.builtin.meta: flush_handlers
 
-- name: Sign in to the relay with the pair account
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ relay_port }}/auth/login"
-    method: POST
-    body_format: form-urlencoded
-    body:
-      username: "{{ relay_pair_username }}"
-      password: "{{ (_relay_secrets_file.content | b64decode | from_json).PULSAR_PAIR_PASSWORD }}"
-    status_code: 200
-  register: _relay_pair_login
-  no_log: true
-
-# Pulsar 0.15.15 publishes a capability snapshot to "<prefix>_pulsar_capabilities"
-# when it binds to the relay, so its presence proves Pulsar reached the relay.
-- name: Wait until Pulsar has connected to the relay
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ relay_port }}/api/v1/topics"
-    headers:
-      Authorization: "Bearer {{ _relay_pair_login.json.access_token }}"
-    return_content: true
-  register: _relay_topics
-  vars:
-    _first_manager: "{{ relay_pulsar_managers | list | first }}"
-    _capabilities_topic: >-
-      {{ relay_topic_prefix ~ '_pulsar_capabilities' ~
-         ('' if _first_manager == '_default_' else '_' ~ _first_manager) }}
-  until: >-
-    _capabilities_topic in
-    ((_relay_topics.json | default([])) | map(attribute='topic_name') | list)
+# Pulsar declares and consumes its setup queue when it has logged in; a consumer
+# on it proves the login, the vhost and the TLS settings. Exit status 75 means
+# "not yet" and is retried (about two minutes); any other failure stops at once.
+- name: Check that Pulsar consumes its setup queue on Galaxy's broker
+  ansible.builtin.command:
+    argv:
+      - "{{ pulsar_venv }}/bin/python"
+      - "{{ pulsar_check_script }}"
+      - "{{ pulsar_config_dir }}/app.yml"
+  register: _pulsar_amqp_check
+  until: _pulsar_amqp_check.rc != 75
   retries: 24
   delay: 5
-  no_log: true
+  changed_when: false
+  failed_when: false
+
+- name: Fail when Pulsar cannot use Galaxy's broker
+  ansible.builtin.fail:
+    msg: "{{ _pulsar_amqp_check.stdout | default('', true) }} {{ _pulsar_amqp_check.stderr | default('', true) | trim }}"
+  when: _pulsar_amqp_check.rc != 0

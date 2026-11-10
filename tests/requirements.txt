@@ -1,0 +1,6 @@
+# Test dependencies: Pulsar as deployed (group_vars pulsar_version), with kombu/py-amqp,
+# and ansible-core for the variables, filters and templates.
+pulsar-app[amqp]==0.15.15
+ansible-core>=2.16,<2.18
+cryptography
+PyYAML

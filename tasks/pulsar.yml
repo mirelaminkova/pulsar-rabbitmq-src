@@ -19,7 +19,7 @@
   register: _pulsar_user
 
 # Every directory the pulsar user owns sits in a root-owned one (the storage directory,
-# created by tasks/storage.yml, or /var/lib/pulsar), and links are not followed:
+# created by tasks/storage.yml), and links are not followed:
 # otherwise a job could swap a directory for a link to, say, the venv, and the next
 # run (as root) would hand that to the pulsar user.
 - name: Create root-owned Pulsar directories
@@ -33,13 +33,13 @@
   loop:
     - "{{ pulsar_venv | dirname }}"
     - "{{ pulsar_config_dir }}"
-    - "{{ pulsar_data_dir }}"
 
 # A volume from an earlier workspace (or a rerun after the user was recreated) holds
-# files of another pulsar uid or gid (never root's: those stay root's). Before the directories are created (which would
-# re-own their tops), coreutils hands over exactly the old owner's files: it walks by
-# file descriptor without following links and changes directories last, so neither a
-# concurrent rename nor an interrupted run can redirect or hide the handover.
+# files of another pulsar uid or gid (root's files stay root's). Before the directories
+# are created (which would re-own their tops), coreutils hands over exactly the old
+# owner's files: it walks by file descriptor without following links and changes
+# directories last, so neither a concurrent rename nor an interrupted run can redirect
+# or hide the handover.
 - name: Find Pulsar data from an earlier workspace
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -48,8 +48,9 @@
   loop: "{{ _pulsar_owned_dirs }}"
   register: _pulsar_reused
 
-# No process of the old owner may change the tree while it is handed over. Restarted
-# by the handler even when a later task fails (force_handlers).
+# Pulsar's own processes stop changing the tree while it is handed over (Slurm jobs of
+# a user recreated on a running workspace may still run; the handover is safe anyway).
+# Restarted by the handler even when a later task fails (force_handlers).
 - name: Stop Pulsar before handing over reused data
   ansible.builtin.command:
     argv: [systemctl, stop, pulsar.service]

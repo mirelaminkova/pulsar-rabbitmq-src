@@ -47,16 +47,17 @@ _pulsar_slurm: "{{ _pulsar_amqp.job_runner == 'slurm' }}"
 
 # --- Pulsar ------------------------------------------------------------------
 pulsar_user: pulsar
-# Root-owned, so that the pulsar user cannot replace the directories below it. Holds
-# only the pulsar user's home: Pulsar's data is on the storage (below).
-pulsar_data_dir: /var/lib/pulsar
-# The pulsar user's home; small, as Apptainer's cache is on the storage.
-pulsar_home: "{{ pulsar_data_dir }}/home"
 # Pulsar's data on the attached storage (root-owned pulsar_storage_path), each directory
 # owned by the pulsar user. Staging is _pulsar_amqp.jobs_directory (<path>/staging).
+# The pulsar user's home, also Pulsar's working directory: Pulsar's own jobs keep only
+# HOME, PATH and TMPDIR of the unit's environment, so what they keep under ~ (Apptainer's
+# cache, Pulsar's tool dependencies) has to be on the storage through HOME.
+pulsar_home: "{{ _pulsar_amqp.storage_path }}/home"
 pulsar_persistence_dir: "{{ _pulsar_amqp.storage_path }}/persisted_data"
 pulsar_apptainer_cache_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_cache"
 pulsar_apptainer_tmp_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_tmp"
+# Jobs' temporary files (TMPDIR); a directory per job under Slurm (task prolog).
+pulsar_job_tmp_dir: "{{ _pulsar_amqp.storage_path }}/job_tmp"
 # The directories the pulsar user owns, each in a root-owned one.
 _pulsar_owned_dirs: >-
   {{ [pulsar_home, pulsar_persistence_dir, _pulsar_amqp.jobs_directory, pulsar_job_tmp_dir]
@@ -64,21 +65,29 @@ _pulsar_owned_dirs: >-
         if _pulsar_amqp.singularity_enabled else []) }}
 # Units that write to the storage and so start only with it (tasks/storage.yml).
 _pulsar_storage_units:
-  - {unit: docker, enabled: "{{ _pulsar_amqp.docker_enabled }}", option: "--docker "}
-  - {unit: slurmd, enabled: "{{ _pulsar_slurm | bool }}", option: ""}
-# Of those, the ones found (tasks/pulsar.yml) with another owner or group than the
-# pulsar user's: data reused from an earlier workspace.
+# Docker keeps its own Restart=always; slurmd's spool directory is created if missing.
+  - unit: docker
+    enabled: "{{ _pulsar_amqp.docker_enabled }}"
+    option: "--docker "
+    service: ""
+  - unit: slurmd
+    enabled: "{{ _pulsar_slurm | bool }}"
+    option: ""
+    service: |
+      ExecStartPre=/usr/bin/mkdir -p {{ pulsar_slurmd_spool_dir }}
+      Restart=on-failure
+# Of the pulsar user's directories found by tasks/pulsar.yml, those with files of
+# another (non-root) owner or group to hand over: data from an earlier workspace.
 _pulsar_handover: >-
-  {{ (_pulsar_reused | default({})).results | default([])
-     | selectattr('stat.exists') | selectattr('stat.isdir')
-     | rejectattr('stat.uid', 'equalto', _pulsar_user.uid | default(-1))
-     | list
-     + ((_pulsar_reused | default({})).results | default([])
-     | selectattr('stat.exists') | selectattr('stat.isdir')
-     | rejectattr('stat.gid', 'equalto', _pulsar_user.group | default(-1))
-     | list) }}
-# Jobs' temporary files (TMPDIR), with either runner.
-pulsar_job_tmp_dir: "{{ _pulsar_amqp.storage_path }}/job_tmp"
+  {%- set ns = namespace(dirs=[]) -%}
+  {%- for found in (_pulsar_reused | default({})).results | default([]) -%}
+  {%- if found.stat.exists and found.stat.isdir
+        and (found.stat.uid not in [0, _pulsar_user.uid | default(-1)]
+             or found.stat.gid not in [0, _pulsar_user.group | default(-1)]) -%}
+  {%- set ns.dirs = ns.dirs + [found.item] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.dirs }}
 # slurmd's spool (job scripts and the state of running jobs), root's; Slurm's
 # controller state (StateSaveLocation) stays on the root disk, as the role sets it.
 pulsar_slurmd_spool_dir: "{{ _pulsar_amqp.storage_path }}/slurmd"
@@ -87,7 +96,7 @@ pulsar_docker_data_root: "{{ _pulsar_amqp.storage_path }}/docker"
 pulsar_venv: /opt/pulsar/venv
 pulsar_config_dir: /opt/pulsar/config
 pulsar_check_script: /opt/pulsar/check_amqp.py
-# files/check_storage.py, run as root before Pulsar and Docker start; alone in its
+# files/check_storage.py, run as root before Pulsar, Docker and slurmd start; alone in its
 # root-only directory, as Python 3.10's -I still puts the script's directory on sys.path.
 pulsar_storage_check_script: /usr/local/libexec/pulsar-src/check_storage.py
 pulsar_version: "0.15.15"
@@ -138,6 +147,8 @@ pulsar_slurm_epilog: /etc/slurm/epilog.sh
 # Slurm jobs run outside the pulsar unit: this sets their TMPDIR and Apptainer
 # directories to the storage (templates/task_prolog.sh.j2).
 pulsar_slurm_task_prolog: /etc/slurm/task_prolog.sh
+# Removes the job's temporary directory after each job (templates/task_epilog.sh.j2).
+pulsar_slurm_task_epilog: /etc/slurm/task_epilog.sh
 # sinfo states in which the node starts jobs; the deployment waits for one.
 _pulsar_slurm_ready_states: [idle, mixed, allocated, completing, planned]
 slurm_config:
@@ -162,6 +173,7 @@ slurm_config:
   SlurmdSpoolDir: "{{ pulsar_slurmd_spool_dir }}"
   TmpFS: "{{ pulsar_job_tmp_dir }}"
   TaskProlog: "{{ pulsar_slurm_task_prolog }}"
+  TaskEpilog: "{{ pulsar_slurm_task_epilog }}"
 
 # galaxyproject.cvmfs client settings, identical to the SRC Galaxy component.
 cvmfs_role: client

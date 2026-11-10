@@ -66,6 +66,14 @@
     group: root
     mode: '0755'
 
+- name: Install the task epilog that removes a job's temporary directory
+  ansible.builtin.template:
+    src: templates/task_epilog.sh.j2
+    dest: "{{ pulsar_slurm_task_epilog }}"
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install Slurm as controller and compute node
   ansible.builtin.include_role:
     name: galaxyproject.slurm

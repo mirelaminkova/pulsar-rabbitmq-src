@@ -4,8 +4,9 @@
     check_storage.py [--protect] [--docker] /data/<volume name>/pulsar
 
 Run as root: by the playbook before anything is installed (with --protect), and by the
-pulsar unit (and, with --docker, Docker's) before every start, so that neither writes to
-the empty mount point on the root disk when the volume is missing, however SRC mounts it.
+pulsar, slurmd and (with --docker) Docker units before every start, so that none writes
+to the empty mount point on the root disk when the volume is missing, however SRC
+mounts it.
 --protect first sets the sticky bit on a volume root that others can write to, so that
 they cannot rename the storage directory; it prints what it changed.
 
@@ -142,7 +143,7 @@ def _ownership_problem(path, existing, point):
                 f"pulsar_storage_path {path}: {directory} belongs to uid {info.st_uid}, "
                 "not root; choose a new directory or give it to root (chown root:root)"
             )
-        if not _sticky(info.st_mode):
+        if not _safe_from_others(info.st_mode):
             return (
                 f"pulsar_storage_path {path}: other users can write to {directory} and so "
                 f"replace Pulsar's directory; remove their write access or set the sticky "
@@ -179,14 +180,14 @@ def _write_problem(path, existing):
     return None
 
 
-def _sticky(mode):
+def _safe_from_others(mode):
     return not mode & (stat.S_IWGRP | stat.S_IWOTH) or mode & stat.S_ISVTX
 
 
 def protect(point):
     """Set the sticky bit on ``point`` if others can write to it; return what changed."""
     mode = os.lstat(point).st_mode
-    if _sticky(mode):
+    if _safe_from_others(mode):
         return None
     os.chmod(point, stat.S_IMODE(mode) | stat.S_ISVTX)
     return f"set the sticky bit on {point}, so that other users cannot rename Pulsar's directory"
@@ -207,15 +208,15 @@ def check(path, mountinfo=MOUNTINFO, device=None, docker=False, protect_mount=Fa
         existing, f"{os.major(info.st_dev)}:{os.minor(info.st_dev)}", mounts(mountinfo)
     )
     device = root_device() if device is None else device
-    if protect_mount and mount[0] != "/" and info.st_dev != device and path != mount[0]:
+    problem = _volume_problem(path, existing, mount, device, docker)
+    if problem:
+        return problem
+    # Only on a volume the path may use (not the root file system, not tmpfs).
+    if protect_mount:
         changed = protect(mount[0])
         if changed:
             print(changed)
-    return (
-        _volume_problem(path, existing, mount, device, docker)
-        or _ownership_problem(path, existing, mount[0])
-        or _write_problem(path, existing)
-    )
+    return _ownership_problem(path, existing, mount[0]) or _write_problem(path, existing)
 
 
 def main(argv):

@@ -93,7 +93,7 @@ jobs:
           drmaa=$(systemctl show pulsar --property=Environment --value | tr ' ' '\n' | grep '^DRMAA_LIBRARY_PATH=')
           sudo tee /usr/local/bin/pulsar-live-job >/dev/null <<SCRIPT
           #!/bin/sh
-          exec sudo -u pulsar env -C /var/lib/pulsar/home $drmaa \\
+          exec sudo -u pulsar env -C /data/ci/pulsar/home $drmaa \\
             /opt/pulsar/venv/bin/python /opt/pulsar/pulsar_job.py /opt/pulsar/config/app.yml "\$@"
           SCRIPT
           sudo chmod 0755 /usr/local/bin/pulsar-live-job
@@ -110,11 +110,13 @@ jobs:
           assert result["slurm_job"] != "none", result
           # Job files on the attached storage, also for a job outside the pulsar unit.
           assert result["cwd"].startswith("/data/ci/pulsar/staging/"), result
-          assert result["tmp"] == "/data/ci/pulsar/job_tmp", result
+          assert result["tmp"] == "/data/ci/pulsar/job_tmp/" + result["slurm_job"], result
           assert result["apptainer_cache"] == "/data/ci/pulsar/apptainer_cache", result
           CHECK
           sudo grep -E '^(SlurmdSpoolDir|TmpFS|TaskProlog)=' /etc/slurm/slurm.conf
           sudo test -d /data/ci/pulsar/slurmd/
+          # The task epilog removed the job's temporary directory.
+          [ -z "$(sudo ls -A /data/ci/pulsar/job_tmp)" ]
           systemctl show slurmd --property=ExecStartPre --value | grep -q check_storage.py
       - name: Run an Apptainer container in a Slurm job
         run: |
@@ -132,6 +134,16 @@ jobs:
             sleep 1
           done
           echo "The epilog did not stop the container"; exit 1
+      # The role, and so Docker's installation, is skipped here (the runner's own
+      # Docker), but the playbook wrote daemon.json and the unit's storage check.
+      - name: Docker keeps its data on the storage
+        run: |
+          sudo cat /etc/docker/daemon.json
+          systemctl show docker --property=ExecStartPre --value | grep -q 'check_storage.py --docker'
+          sudo systemctl restart docker
+          [ "$(sudo docker info -f '{{.DockerRootDir}}')" = /data/ci/pulsar/docker ]
+          pulsar-live-job --require-slurm --command "docker run --rm $IMAGE true"
+          sudo test -d /data/ci/pulsar/docker/overlay2
       # pulsar_job_runner: local stops Slurm and Pulsar runs jobs itself; slurm again
       # starts Slurm and Pulsar submits through it. Pulsar restarts both times.
       - name: Switch to the local runner

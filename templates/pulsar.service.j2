@@ -3,9 +3,6 @@
 Description=Pulsar (jobs from Galaxy's RabbitMQ)
 After=network-online.target{{ ' docker.service' if _pulsar_amqp.docker_enabled else '' }}{{ ' autofs.service' if _pulsar_cvmfs | bool else '' }}{{ ' munge.service slurmctld.service' if _pulsar_slurm | bool else '' }}
 Wants=network-online.target
-# Never start on the root disk's empty mount point when the volume is missing: after a
-# mount systemd knows of (fstab), and only when the check finds the volume (below).
-RequiresMountsFor={{ _pulsar_amqp.storage_path }}
 
 [Service]
 Type=simple

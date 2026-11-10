@@ -106,12 +106,12 @@ def condition(expression, **variables):
 
 # The filter's parameters (not group_vars') for a valid Pulsar.
 BASE = {
-    "galaxy_fqdn": "galaxy.example.org",
-    "port": "5671",
-    "name": "hpc",
-    "password": PASSWORD,
-    "manager": "_default_",
-    "storage_path": "/data/pulsar_storage/pulsar",
+    "galaxy_fqdn": PARAMS["pulsar_galaxy_fqdn"],
+    "port": PARAMS["pulsar_amqp_port"],
+    "name": PARAMS["pulsar_amqp_name"],
+    "password": PARAMS["pulsar_amqp_password"],
+    "manager": PARAMS["pulsar_manager"],
+    "storage_path": PARAMS["pulsar_storage_path"],
     "docker_enabled": "true",
     "singularity_enabled": "true",
 }

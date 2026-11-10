@@ -346,6 +346,15 @@ def test_protect_leaves_a_private_or_sticky_volume_root_alone(volume, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_protect_never_touches_a_refused_volume(tmp_path):
+    root = tmp_path / "vol"
+    root.mkdir(mode=0o777)
+    root.chmod(0o777)
+    info = mountinfo(tmp_path, ROOT_FS, (str(root), "tmpfs"))
+    assert "tmpfs" in check_storage.check(str(root / "pulsar"), info, -1, protect_mount=True)
+    assert stat.S_IMODE(os.stat(root).st_mode) == 0o777
+
+
 def test_protect_never_touches_the_root_file_system_or_the_path(volume, tmp_path):
     root, info = volume
     root.chmod(0o777)

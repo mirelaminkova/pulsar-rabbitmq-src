@@ -1,0 +1,16 @@
+---
+id: no-eval-exec
+language: python
+severity: error
+message: Do not use eval()/exec(); the filter plugins and the broker check must not run dynamic code.
+note: >-
+  The filter plugins see SRC component parameters and check_amqp.py reads app.yml,
+  which carries the broker password, as root. Parse values explicitly (int(),
+  yaml.safe_load(), a lookup table).
+ignores:
+  - tests/galaxy_contract/**  # vendored from the Galaxy component
+rule:
+  kind: call
+  has:
+    field: function
+    regex: ^(eval|exec|builtins\.eval|builtins\.exec)$

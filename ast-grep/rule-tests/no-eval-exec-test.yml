@@ -1,0 +1,12 @@
+---
+id: no-eval-exec
+valid:
+  - int(value)
+  - json.loads(value)
+  - evaluate(value)
+  - obj.exec_command(value)
+invalid:
+  - eval(value)
+  - exec(code)
+  - builtins.eval(value)
+  - "x = exec(compile(src, 'f', 'exec'))"

@@ -1,0 +1,20 @@
+# Development and CI tooling (unit tests, linters, git hooks).
+# Install into a virtualenv: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+pytest~=9.2.0
+pytest-cov~=7.1.0
+Jinja2~=3.1.6
+PyYAML~=6.0.3
+# tests/helpers.py renders templates with Templar.copy_with_new_env() and do_template(),
+# which ansible-core 2.19's templating rewrite removed; 2.18 is the newest release with them.
+ansible-core~=2.18.20
+ansible-lint~=26.11.0
+yamllint~=1.38.0
+ruff~=0.17.4
+pre-commit~=4.7.0
+ast-grep-cli~=0.51.1
+# Pulsar as deployed (group_vars pulsar_version) with kombu/py-amqp, for the tests that read
+# app.yml through Pulsar's own connection code; cryptography for the TLS handshake tests.
+pulsar-app[amqp]==0.15.15
+cryptography~=50.0.2
+# semgrep is not listed: it runs from pre-commit's own environment
+# (semgrep==1.184.0 in .pre-commit-config.yaml).

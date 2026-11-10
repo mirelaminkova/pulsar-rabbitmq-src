@@ -1,0 +1,9 @@
+---
+# ast-grep project config: `ast-grep scan` (pre-push hook) and `ast-grep test`.
+ruleDirs:
+  - ast-grep/rules
+testConfigs:
+  - testDir: ast-grep/rule-tests
+languageGlobs:
+  # Pulsar's app.yml is rendered from a YAML Jinja template.
+  yaml: ["*.yml.j2"]

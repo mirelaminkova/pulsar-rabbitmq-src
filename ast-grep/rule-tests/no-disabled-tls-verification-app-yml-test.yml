@@ -1,0 +1,13 @@
+---
+id: no-disabled-tls-verification-app-yml
+valid:
+  - "amqp_connect_ssl_cert_reqs: cert_required"
+  - "amqp_connect_ssl_ca_certs: /etc/ssl/certs/ca-certificates.crt"
+  - "note: cert_none is refused"
+invalid:
+  - "amqp_connect_ssl_cert_reqs: cert_none"
+  - "amqp_connect_ssl_cert_reqs: CERT_OPTIONAL"
+  - |
+    message_queue_url: {{ _pulsar_amqp.url | to_json }}
+    amqp_connect_ssl_cert_reqs: "cert_none"
+    amqp_connect_ssl_ca_certs: {{ pulsar_amqp_ca_certs | to_json }}

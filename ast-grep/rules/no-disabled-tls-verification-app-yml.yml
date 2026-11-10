@@ -1,0 +1,21 @@
+---
+id: no-disabled-tls-verification-app-yml
+language: yaml
+severity: error
+message: Pulsar's app.yml must require and verify Galaxy's broker certificate.
+note: >-
+  amqp_connect_ssl_cert_reqs cert_none or cert_optional lets anyone on the path
+  impersonate Galaxy's RabbitMQ and collect Pulsar's password and jobs.
+  Lines inside Jinja {% %} blocks do not parse as YAML and are not checked;
+  the pytest tests check the rendered app.yml.
+ignores:
+  - tests/galaxy_contract/**  # vendored from the Galaxy component
+rule:
+  kind: block_mapping_pair
+  all:
+    - has:
+        field: key
+        regex: ^amqp_connect_ssl_cert_reqs$
+    - has:
+        field: value
+        regex: (?i)cert_(none|optional)

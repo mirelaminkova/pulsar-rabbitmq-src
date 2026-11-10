@@ -4,8 +4,9 @@ pytest~=9.2.0
 pytest-cov~=7.1.0
 Jinja2~=3.1.6
 PyYAML~=6.0.3
-# The tests drive ansible-core's Templar API, which 2.19 replaced; ansible-lint excludes 2.17.
-ansible-core~=2.16.20
+# tests/helpers.py renders templates with Templar.copy_with_new_env() and do_template(),
+# which ansible-core 2.19's templating rewrite removed; 2.18 is the newest release with them.
+ansible-core~=2.18.20
 ansible-lint~=26.11.0
 yamllint~=1.38.0
 ruff~=0.17.4

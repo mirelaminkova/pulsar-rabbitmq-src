@@ -4,15 +4,21 @@ valid:
   - "params = {'cert_reqs': ssl.CERT_REQUIRED}"
   - ssl.create_default_context(cafile=ca_certs)
   - context.check_hostname = True
+  - context.verify_mode = ssl.CERT_REQUIRED
+  - requests.get(url, verify=ca_bundle)
   - "amqp_connect_ssl_cert_reqs = 'cert_required'"
   - "message = 'CERT_NONE is refused'"
 invalid:
   - "params = {'cert_reqs': ssl.CERT_NONE}"
   - context.verify_mode = ssl.CERT_NONE
+  - context.verify_mode = ssl.CERT_OPTIONAL
+  - context.verify_mode = 0
   - context.check_hostname = False
   - context = ssl._create_unverified_context()
+  - ssl._create_default_https_context = ssl._create_unverified_context
+  - requests.get(url, verify=False)
   - |
     from ssl import CERT_NONE
     sock = wrap(sock, cert_reqs=CERT_NONE)
   - "conf['amqp_connect_ssl_cert_reqs'] = 'cert_none'"
-  - 'amqp_connect_ssl_cert_reqs = "CERT_NONE"'
+  - 'amqp_connect_ssl_cert_reqs = "CERT_OPTIONAL"'

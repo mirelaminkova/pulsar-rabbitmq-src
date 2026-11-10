@@ -232,7 +232,11 @@ SAME_RULES_AS_GALAXY = {
 
 @pytest.mark.parametrize(
     ("key", "value"),
-    [(key, value) for key, values in SAME_RULES_AS_GALAXY.items() for value in values],
+    [
+        pytest.param(key, value, id=f"{key}-{value if len(value) <= 20 else f'{len(value)}chars'}")
+        for key, values in SAME_RULES_AS_GALAXY.items()
+        for value in values
+    ],
 )
 def test_rules_match_galaxys_parser(key, value):
     result = settings(**{key: value})

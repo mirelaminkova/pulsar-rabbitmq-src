@@ -80,7 +80,7 @@ pre-commit run --all-files              # yamllint --strict, ruff, ansible-lint,
 pre-commit run --hook-stage pre-push --all-files   # semgrep (p/default, p/secrets), ast-grep scan
 ```
 
-The ast-grep rules in `ast-grep/rules/` (tests in `ast-grep/rule-tests/`) refuse `eval`/`exec` and anything that switches off TLS certificate or hostname verification. `tests/galaxy_contract/` is vendored from the Galaxy component and excluded from linting, formatting and coverage.
+The ast-grep rules in `ast-grep/rules/` (tests in `ast-grep/rule-tests/`) refuse `eval`/`exec` and the usual ways of switching off TLS certificate or hostname verification, in Python code and in `amqp_connect_ssl_cert_reqs` of the app.yml template; the pytest tests check the rendered TLS settings themselves. `tests/galaxy_contract/` is vendored from the Galaxy component and excluded from linting, formatting and coverage.
 
 The tests cover parameter validation against Galaxy's parser, the welcome page's entry parsed by Galaxy's parser, `app.yml` against Galaxy's template and as Pulsar 0.15.15 reads it (user, vhost, URL, TLS options, queue names), real TLS handshakes for certificate and hostname verification, the broker check's messages, and the playbook's structure. `GALAXY_AMQP_REPO=/path/to/src-component-galaxy-amqp` also compares the vendored contract files with a Galaxy checkout; CI does this against the Galaxy repository's `main` in a separate job, so a change on the Galaxy side shows up as a failed contract check without hiding this repository's own results.
 

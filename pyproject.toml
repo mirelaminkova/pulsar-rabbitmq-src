@@ -16,9 +16,10 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-# What is measured: the deploy-time broker check and the playbook's filter plugins.
-# tests/galaxy_contract/ is a vendored copy of the Galaxy component's parser, not ours.
-source_dirs = ["files", "filter_plugins"]
+# What is measured: the deploy-time broker check, the playbook's filter plugins and the
+# test helpers. tests/galaxy_contract/ is a vendored copy of the Galaxy component's parser.
+source_dirs = ["files", "filter_plugins", "tests"]
+omit = ["tests/test_*.py", "tests/galaxy_contract/*"]
 
 [tool.coverage.report]
 show_missing = true

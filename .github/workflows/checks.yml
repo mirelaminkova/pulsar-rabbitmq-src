@@ -4,9 +4,8 @@ on:
   pull_request:
     branches:
       - main
+  # Every branch, as test.yml did when it ran the unit tests.
   push:
-    branches:
-      - main
 
 permissions:
   contents: read

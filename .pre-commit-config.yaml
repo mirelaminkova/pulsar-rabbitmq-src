@@ -5,15 +5,21 @@
 # Versions of the local Python hooks match requirements-dev.txt; keep them in sync.
 default_install_hook_types: [pre-commit, pre-push]
 default_stages: [pre-commit]
-exclude: ^tests/galaxy_contract/  # vendored from the Galaxy component, kept byte-for-byte
+# pulsar-app 0.15.15 (Cheetah's cgi) and ansible-core 2.18 (crypt) need Python <= 3.12, as in CI.
+default_language_version:
+  python: python3.12
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
+    # tests/galaxy_contract/ is vendored from the Galaxy component and kept byte-for-byte:
+    # excluded from the fixers and linters, but its changes still run pytest.
     hooks:
       - id: trailing-whitespace
+        exclude: &vendored ^tests/galaxy_contract/
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
+        exclude: *vendored
       - id: check-merge-conflict
       - id: check-added-large-files
 
@@ -22,13 +28,16 @@ repos:
     hooks:
       - id: yamllint
         args: [--strict]
+        exclude: *vendored
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.4
     hooks:
       - id: ruff-check
         args: [--fix]
+        exclude: *vendored
       - id: ruff-format
+        exclude: *vendored
 
   - repo: local
     hooks:
@@ -39,7 +48,7 @@ repos:
         name: ansible-lint
         entry: env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE ansible-lint
         language: python
-        additional_dependencies: [ansible-lint==26.11.0, ansible-core==2.16.20]
+        additional_dependencies: [ansible-lint==26.11.0, ansible-core==2.18.20]
         files: \.(ya?ml|j2)$
         pass_filenames: false
 
@@ -52,10 +61,15 @@ repos:
           - pytest-cov==7.1.0
           - Jinja2==3.1.6
           - PyYAML==6.0.3
-          - ansible-core==2.16.20
+          - ansible-core==2.18.20
           - pulsar-app[amqp]==0.15.15
           - cryptography==50.0.2
-        files: ^(tests/|templates/|files/|group_vars/|filter_plugins/|playbook\.yml$|parameters\.yml$|tasks/|pyproject\.toml$)
+        files: |
+          (?x)^(
+            (tests|templates|files|group_vars|filter_plugins|tasks)/
+            | (playbook|parameters)\.yml$
+            | pyproject\.toml$ | requirements-dev\.txt$ | \.pre-commit-config\.yaml$
+          )
         pass_filenames: false
 
       - id: ast-grep-test

@@ -31,8 +31,9 @@ check_amqp = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(check_amqp)
 
 
-def app_yml(**overrides):
-    conf = yaml.safe_load(render("pulsar-app.yml.j2"))
+def app_yml(params=None, **overrides):
+    """Our rendered app.yml, from component ``params``, with ``overrides`` applied."""
+    conf = yaml.safe_load(render("pulsar-app.yml.j2", **(params or {})))
     conf.update(overrides)
     return conf
 
@@ -76,7 +77,7 @@ def test_consumer_on_setup_queue():
 
 def test_manager_comes_from_app_yml():
     channel = FakeChannel(result=1)
-    conf = yaml.safe_load(render("pulsar-app.yml.j2", pulsar_manager="gpu"))
+    conf = app_yml({"pulsar_manager": "gpu"})
 
     assert_result(run_check(channel, conf=conf), check_amqp.OK, "pulsar_gpu__setup")
 
@@ -84,8 +85,10 @@ def test_manager_comes_from_app_yml():
 @pytest.mark.parametrize(
     "argv",
     [
-        [str(SCRIPT), "/nonexistent/app.yml"],
-        [str(REPO / "files" / "no_such_check.py"), "/nonexistent/app.yml"],
+        pytest.param([str(SCRIPT), "/nonexistent/app.yml"], id="script-raises"),
+        pytest.param(
+            [str(REPO / "files" / "no_such_check.py"), "/nonexistent/app.yml"], id="no-script"
+        ),
     ],
 )
 def test_a_broken_run_is_not_retried(argv):
@@ -137,14 +140,18 @@ def test_temporary_dns_failure_is_retried():
     assert_result(run_check(connect_error=error), check_amqp.RETRY, "galaxy.example.org")
 
 
-def test_unreachable_broker_is_retried():
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionRefusedError(111, "refused"), TimeoutError("timed out")],
+    ids=lambda error: type(error).__name__,
+)
+def test_unreachable_broker_is_retried(error):
     assert_result(
-        run_check(connect_error=ConnectionRefusedError(111, "refused")),
+        run_check(connect_error=error),
         check_amqp.RETRY,
         "galaxy.example.org:5671",
         "src_galaxy_rabbitmq",
     )
-    assert_result(run_check(connect_error=TimeoutError("timed out")), check_amqp.RETRY, "5671")
 
 
 def test_unexpected_errors_never_show_the_password():

@@ -18,7 +18,7 @@ HTTP server stands in for it, for this job's key only: it serves the files of Ga
 temporary directory (datasets and job directory) and accepts uploads only to the job's
 output datasets and its job directory.
 
-    python galaxy_job.py CONFIG_JSON [--timeout SECONDS]
+    python galaxy_job.py CONFIG_JSON [--timeout SECONDS] [--bind ADDRESS]
 
 CONFIG_JSON is ``{"runner": ..., "destination": ...}`` from tests/e2e/galaxy_config.py. Prints
 what Galaxy received as JSON; the exit status is 0 when the job completed with exit code 0
@@ -63,8 +63,9 @@ INPUT_TEXT = "pulsar\ngalaxy\nrabbitmq\n"
 # The tool: sorts the input into the first output and reports where it ran into the second.
 # Pulsar's monitor publishes "running" when a poll (every min_polling_interval, 0.5 s in
 # app.yml) finds the job running; 10 s leaves room for a slow Slurm poll on a busy runner.
+RUNNING_SECONDS = 10
 COMMAND = (
-    "sleep 10 && sort {input} > {output} && "
+    "sleep {seconds} && sort {input} > {output} && "
     'echo "user=$(id -un) slurm_job=${{SLURM_JOB_ID:-none}} cwd=$PWD" > {report}'
 )
 
@@ -76,10 +77,10 @@ class JobFiles:
     ``job_dir`` (Pulsar also posts the job's metrics there).
     """
 
-    def __init__(self, root, job_key, job_dir=None, outputs=()):
+    def __init__(self, root, job_key, job_dir, outputs=()):
         self.root = Path(root).resolve()
         self.job_key = job_key
-        self.job_dir = Path(job_dir or root).resolve()
+        self.job_dir = Path(job_dir).resolve()
         self.outputs = {Path(output).resolve() for output in outputs}
         self.received = {}
         self.served = []
@@ -245,6 +246,7 @@ def run_job(config, timeout=600, root=None, bind=""):
             # rewrite_parameters: Galaxy builds the command line with Pulsar's paths.
             paths = PathMapper(client, remote_job_config, str(working))
             command_line = COMMAND.format(
+                seconds=RUNNING_SECONDS,
                 input=paths.remote_input_path_rewrite(str(dataset_input)),
                 output=paths.remote_output_path_rewrite(str(dataset_output)),
                 report=paths.remote_output_path_rewrite(str(report)),
@@ -316,9 +318,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("config")
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--bind", default="", help="address of the job files API (default: all)")
     args = parser.parse_args(argv)
     config = json.loads(Path(args.config).read_text())
-    result = run_job(config, timeout=args.timeout)
+    result = run_job(config, timeout=args.timeout, bind=args.bind)
     print(json.dumps(result, indent=2))
     return 0 if succeeded(result) else 1
 

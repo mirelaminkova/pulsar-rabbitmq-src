@@ -123,7 +123,9 @@ def config_for(pulsar, entry):
     return config
 
 
-def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path):
+def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path, monkeypatch):
+    # The local runner polls every 0.5 s; the 10 s are for Slurm.
+    monkeypatch.setattr(galaxy_job, "RUNNING_SECONDS", 2)
     result = galaxy_job.run_job(
         config_for(pulsar, entry), timeout=60, root=tmp_path, bind="127.0.0.1"
     )
@@ -142,12 +144,10 @@ def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path)
 
 def test_main_reports_a_failed_job(pulsar, entry, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(galaxy_job, "COMMAND", "exit 3; {input} {output} {report}")
-    run_job = galaxy_job.run_job
-    monkeypatch.setattr(galaxy_job, "run_job", lambda *a, **k: run_job(*a, **k, bind="127.0.0.1"))
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config_for(pulsar, entry)))
 
-    assert galaxy_job.main([str(path), "--timeout", "60"]) == 1
+    assert galaxy_job.main([str(path), "--timeout", "60", "--bind", "127.0.0.1"]) == 1
 
     result = json.loads(capsys.readouterr().out)
     assert (result["status"], result["returncode"]) == ("complete", 3)
@@ -267,16 +267,15 @@ def test_job_files_refuses_uploads(job_files, target):
 
 
 @pytest.mark.parametrize(
-    ("body", "content_type"),
+    ("body", "headers"),
     [
-        pytest.param(b"plain", "text/plain", id="not-multipart"),
+        pytest.param(b"plain", {"Content-Type": "text/plain"}, id="not-multipart"),
         pytest.param(*multipart(("other", "x")), id="no-file-field"),
         pytest.param(*multipart(("file", "a"), ("file", "b")), id="two-files"),
     ],
 )
-def test_job_files_rejects_bad_uploads(job_files, body, content_type):
+def test_job_files_rejects_bad_uploads(job_files, body, headers):
     _, port, root = job_files
-    headers = content_type if isinstance(content_type, dict) else {"Content-Type": content_type}
     target = f"{API}?job_key=key1&path={root / 'out.dat'}"
 
     assert request(port, "POST", target, body, headers)[0] == 400

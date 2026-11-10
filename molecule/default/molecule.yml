@@ -47,7 +47,7 @@ provisioner:
         molecule_tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
         # The Galaxy component's RabbitMQ node (_galaxy_rabbitmq_node).
         molecule_rabbitmq_node: rabbit@localhost
-        molecule_vhost: /pulsar/molecule
+        molecule_vhost: "/pulsar/{{ hostvars['pulsar'].pulsar_amqp_name }}"
     host_vars:
       # Component parameters, as SRC passes them (host vars beat group_vars/all.yml).
       pulsar:

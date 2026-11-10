@@ -79,7 +79,7 @@
 {% else %}
         <li><strong>Manager:</strong> <code>{{ a.manager | e }}</code>; Pulsar runs {{ pulsar_num_concurrent_jobs | e }} concurrent jobs on this workspace itself (<code>queued_python</code>)</li>
 {% endif %}
-        <li><strong>Staging directory:</strong> <code>{{ a.jobs_directory | e }}</code> (Galaxy's <code>jobs_directory</code>)</li>
+        <li><strong>Storage:</strong> <code>{{ a.storage_path | e }}</code> (attached volume), with staging <code>{{ a.jobs_directory | e }}</code> (Galaxy's <code>jobs_directory</code>); see <em>Directories</em> below</li>
         <li><strong>Containers:</strong> {{ 'Docker' if a.docker_enabled else 'no Docker' }}, {{ 'Apptainer (singularity)' if a.singularity_enabled else 'no Apptainer' }}{{ ', CVMFS under /cvmfs' if _pulsar_cvmfs | bool else '' }}</li>
       </ul>
     </section>
@@ -135,7 +135,7 @@ Pulsar ──────────── HTTPS for input/output files ──�
       <ul>
         <li><strong>Host:</strong> <code>{{ inventory_hostname | e }}</code> ({{ ansible_distribution | e }} {{ ansible_distribution_version | e }}, hostname {{ ansible_hostname | e }})</li>
         <li><strong>Pulsar venv:</strong> <code>{{ pulsar_venv | e }}</code></li>
-        <li><strong>Persistence directory:</strong> <code>{{ pulsar_persistence_dir | e }}</code></li>
+        <li><strong>Directories</strong> on the storage: persistence <code>{{ pulsar_persistence_dir | e }}</code>{% if a.singularity_enabled %}, Apptainer cache <code>{{ pulsar_apptainer_cache_dir | e }}</code> and tmp <code>{{ pulsar_apptainer_tmp_dir | e }}</code>{% endif %}{% if a.docker_enabled %}, Docker data-root <code>{{ pulsar_docker_data_root | e }}</code>{% endif %}</li>
       </ul>
     </details>
   </main>

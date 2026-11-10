@@ -3,13 +3,25 @@
 Description=Pulsar (jobs from Galaxy's RabbitMQ)
 After=network-online.target{{ ' docker.service' if _pulsar_amqp.docker_enabled else '' }}{{ ' autofs.service' if _pulsar_cvmfs | bool else '' }}{{ ' munge.service slurmctld.service' if _pulsar_slurm | bool else '' }}
 Wants=network-online.target
+# Never start on the root disk's empty mount point when the volume is missing: after a
+# mount systemd knows of (fstab), and only when the check finds the volume (below).
+RequiresMountsFor={{ _pulsar_amqp.storage_path }}
 
 [Service]
 Type=simple
 User={{ pulsar_user }}
 Group={{ pulsar_user }}
 UMask=022
+# Jobs' temporary files on the storage (Slurm jobs get it from the task prolog).
+Environment=TMPDIR={{ pulsar_job_tmp_dir }}
+{% if _pulsar_amqp.singularity_enabled %}
+# Apptainer's image cache and build space on the storage; jobs inherit this environment.
+Environment=APPTAINER_CACHEDIR={{ pulsar_apptainer_cache_dir }}
+Environment=APPTAINER_TMPDIR={{ pulsar_apptainer_tmp_dir }}
+{% endif %}
 WorkingDirectory={{ pulsar_home }}
+# As root ("+"); a missing volume fails the start, and Restart= tries again.
+ExecStartPre=+/usr/bin/python3 -I {{ pulsar_storage_check_script }} {{ _pulsar_amqp.storage_path }}
 # server.ini only configures logging; Pulsar reads app.yml from the same directory.
 {% if _pulsar_slurm | bool %}
 # Pulsar's queued_drmaa manager submits jobs to Slurm as this user; slurmd runs

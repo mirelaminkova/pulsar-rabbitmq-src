@@ -48,10 +48,19 @@ jobs:
         run: python -m pip install "$(grep '^ansible-core' requirements-dev.txt)"
       - name: Install Ansible dependencies
         run: ansible-galaxy install -r requirements.yml
+      # A separate ext4 file system at /data/ci, as SRC mounts an attached volume.
+      - name: Attach a storage volume
+        run: |
+          sudo fallocate -l 6G /mnt/pulsar-volume.img
+          sudo mkfs.ext4 -q /mnt/pulsar-volume.img
+          sudo mkdir -p /data/ci
+          sudo mount -o loop /mnt/pulsar-volume.img /data/ci
+          findmnt /data/ci
       - name: Write the component parameters
         run: |
           cat > "$RUNNER_TEMP/params.yml" <<'PARAMS'
           ansible_python_interpreter: /usr/bin/python3
+          pulsar_storage_path: /data/ci/pulsar
           pulsar_galaxy_fqdn: galaxy.example.org
           pulsar_amqp_name: ci
           pulsar_amqp_password: Ci.Password-1234
@@ -99,10 +108,19 @@ jobs:
           assert result["manager_type"] == "queued_drmaa", result
           assert result["user"] == "pulsar", result
           assert result["slurm_job"] != "none", result
-          assert result["cwd"].startswith("/mnt/pulsar/files/staging/"), result
+          # Job files on the attached storage, also for a job outside the pulsar unit.
+          assert result["cwd"].startswith("/data/ci/pulsar/staging/"), result
+          assert result["tmp"] == "/data/ci/pulsar/job_tmp", result
+          assert result["apptainer_cache"] == "/data/ci/pulsar/apptainer_cache", result
           CHECK
+          sudo grep -E '^(SlurmdSpoolDir|TmpFS|TaskProlog)=' /etc/slurm/slurm.conf
+          sudo test -d /data/ci/pulsar/slurmd/
+          systemctl show slurmd --property=ExecStartPre --value | grep -q check_storage.py
       - name: Run an Apptainer container in a Slurm job
-        run: pulsar-live-job --require-slurm --command "singularity exec docker://$IMAGE true"
+        run: |
+          pulsar-live-job --require-slurm --command "singularity exec docker://$IMAGE true"
+          # The image went to the cache on the storage.
+          sudo find /data/ci/pulsar/apptainer_cache -mindepth 1 | grep -q .
       - name: Run a Docker container in a Slurm job
         run: pulsar-live-job --require-slurm --command "docker run --rm $IMAGE true"
       - name: The epilog stops the job's Docker container

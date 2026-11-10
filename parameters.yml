@@ -12,8 +12,9 @@ pulsar_amqp_name: ""
 pulsar_amqp_password: ""
 # The entry's manager.
 pulsar_manager: _default_
-# The entry's jobs_directory (Pulsar's staging directory).
-pulsar_staging_dir: /mnt/pulsar/files/staging
+# A directory on the workspace's attached storage volume, e.g. /data/<volume name>/pulsar.
+# Required. Pulsar keeps all its data there; the entry's jobs_directory is <path>/staging.
+pulsar_storage_path: ""
 # Mount the Galaxy CVMFS repositories (reference data). "false" leaves CVMFS out.
 pulsar_cvmfs: "true"
 # "false" leaves Apptainer out; the Galaxy entry then has no singularity_enabled.

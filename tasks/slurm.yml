@@ -49,6 +49,23 @@
   register: _pulsar_drmaa_library
   failed_when: not _pulsar_drmaa_library.stat.exists
 
+# Before the role writes slurm.conf with TaskProlog and starts slurmd.
+- name: Create Slurm's configuration directory
+  ansible.builtin.file:
+    path: "{{ pulsar_slurm_task_prolog | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the task prolog that keeps job files on the storage
+  ansible.builtin.template:
+    src: templates/task_prolog.sh.j2
+    dest: "{{ pulsar_slurm_task_prolog }}"
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install Slurm as controller and compute node
   ansible.builtin.include_role:
     name: galaxyproject.slurm

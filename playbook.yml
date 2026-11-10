@@ -13,6 +13,16 @@
         fail_msg: "Check the component parameters: {{ _pulsar_amqp_errors | join('; ') }}"
         quiet: true
 
+    # Ignored since pulsar_storage_path replaced it; a catalog item may still set it.
+    - name: Refuse the replaced staging directory parameter
+      ansible.builtin.assert:
+        that: pulsar_staging_dir | default('', true) | length == 0
+        fail_msg: >-
+          pulsar_staging_dir is replaced by pulsar_storage_path (staging is
+          <pulsar_storage_path>/staging): remove it from the catalog item and set
+          pulsar_storage_path to a directory on an attached storage volume.
+        quiet: true
+
     - name: Check supported workspace OS
       ansible.builtin.assert:
         that:
@@ -28,6 +38,10 @@
           pulsar_job_runner slurm needs an x86_64 workspace (slurm-drmaa has no
           {{ ansible_architecture }} packages); choose pulsar_job_runner local.
         quiet: true
+
+    # Before the roles (Docker's data-root is on it) and Pulsar.
+    - name: Check and prepare the attached storage
+      ansible.builtin.include_tasks: tasks/storage.yml
 
     - name: Check SRC nginx prerequisite
       ansible.builtin.stat:
@@ -94,6 +108,10 @@
       when: not _pulsar_slurm | bool
 
   handlers:
+    - name: Reload systemd units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
     - name: Restart Pulsar
       ansible.builtin.systemd:
         name: pulsar

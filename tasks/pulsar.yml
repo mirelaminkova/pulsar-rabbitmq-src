@@ -16,10 +16,12 @@
     shell: /usr/sbin/nologin
     groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
     append: true
+  register: _pulsar_user
 
-# Every directory the pulsar user owns sits in a root-owned one, and links are not
-# followed: otherwise a job could swap a directory for a link to, say, the venv,
-# and the next run (as root) would hand that to the pulsar user.
+# Every directory the pulsar user owns sits in a root-owned one (the storage directory,
+# created by tasks/storage.yml, or /var/lib/pulsar), and links are not followed:
+# otherwise a job could swap a directory for a link to, say, the venv, and the next
+# run (as root) would hand that to the pulsar user.
 - name: Create root-owned Pulsar directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -28,7 +30,65 @@
     group: root
     mode: '0755'
     follow: false
-  loop: "{{ [pulsar_venv | dirname, pulsar_config_dir, pulsar_data_dir] + _pulsar_amqp.staging_parents }}"
+  loop:
+    - "{{ pulsar_venv | dirname }}"
+    - "{{ pulsar_config_dir }}"
+    - "{{ pulsar_data_dir }}"
+
+# A volume from an earlier workspace (or a rerun after the user was recreated) holds
+# files of another pulsar uid or gid (never root's: those stay root's). Before the directories are created (which would
+# re-own their tops), coreutils hands over exactly the old owner's files: it walks by
+# file descriptor without following links and changes directories last, so neither a
+# concurrent rename nor an interrupted run can redirect or hide the handover.
+- name: Find Pulsar data from an earlier workspace
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: "{{ _pulsar_owned_dirs }}"
+  register: _pulsar_reused
+
+# No process of the old owner may change the tree while it is handed over. Restarted
+# by the handler even when a later task fails (force_handlers).
+- name: Stop Pulsar before handing over reused data
+  ansible.builtin.command:
+    argv: [systemctl, stop, pulsar.service]
+  register: _pulsar_stop
+  # 5: no such unit yet (a new workspace).
+  failed_when: _pulsar_stop.rc not in [0, 5]
+  changed_when: _pulsar_stop.rc == 0
+  when: _pulsar_handover | length > 0
+  notify: Restart Pulsar
+
+- name: Give reused Pulsar data of another uid to the pulsar user
+  ansible.builtin.command:
+    argv:
+      - chown
+      - --recursive
+      - --no-dereference
+      - "--from={{ item.stat.uid }}"
+      - "{{ pulsar_user }}:{{ pulsar_user }}"
+      - "{{ item.item }}"
+  changed_when: true
+  loop: "{{ _pulsar_reused.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists and item.stat.isdir and item.stat.uid not in [0, _pulsar_user.uid | default(-1)]
+
+- name: Give reused Pulsar data of another gid to the pulsar group
+  ansible.builtin.command:
+    argv:
+      - chown
+      - --recursive
+      - --no-dereference
+      - "--from=:{{ item.stat.gid }}"
+      - ":{{ pulsar_user }}"
+      - "{{ item.item }}"
+  changed_when: true
+  loop: "{{ _pulsar_reused.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists and item.stat.isdir and item.stat.gid not in [0, _pulsar_user.group | default(-1)]
 
 - name: Create Pulsar's working directories
   ansible.builtin.file:
@@ -38,10 +98,7 @@
     group: "{{ pulsar_user }}"
     mode: '0750'
     follow: false
-  loop:
-    - "{{ pulsar_home }}"
-    - "{{ pulsar_persistence_dir }}"
-    - "{{ _pulsar_amqp.jobs_directory }}"
+  loop: "{{ _pulsar_owned_dirs }}"
 
 # No `creates:`, so a version change in group_vars upgrades the venv.
 # The amqp extra installs kombu, which Pulsar needs for pyamqp:// message queues.

@@ -1,6 +1,14 @@
 *.tmp
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+# ansible-lint installs requirements.yml dependencies here
 .ansible/
+# GALAXY_AMQP_REPO checkout in CI (test.yml)
 .galaxy-amqp/

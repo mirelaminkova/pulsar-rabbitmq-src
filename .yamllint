@@ -1,0 +1,27 @@
+---
+# yamllint configuration compatible with ansible-lint's production profile
+# (https://ansible.readthedocs.io/projects/lint/rules/yaml/).
+extends: default
+
+ignore: |
+  .venv/
+  .ansible/
+  .galaxy-amqp/
+  tests/galaxy_contract/
+
+rules:
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  truthy:
+    allowed-values: ["true", "false"]
+    # GitHub Actions uses the bare key `on:`.
+    check-keys: false
+  line-length:
+    max: 160
+    level: warning

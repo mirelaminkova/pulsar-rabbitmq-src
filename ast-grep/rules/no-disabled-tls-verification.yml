@@ -1,0 +1,23 @@
+---
+id: no-disabled-tls-verification
+language: python
+severity: error
+message: Do not switch off TLS certificate or hostname verification.
+note: >-
+  Pulsar logs in to Galaxy's RabbitMQ with its password over amqps; without
+  certificate and hostname verification (app.yml amqp_connect_ssl_*) anyone on
+  the path could impersonate the broker and collect the password and the jobs.
+rule:
+  any:
+    - pattern: ssl.CERT_NONE
+    - pattern: ssl._create_unverified_context($$$)
+    - pattern: $CONTEXT.check_hostname = False
+    # from ssl import CERT_NONE
+    - kind: identifier
+      regex: ^CERT_NONE$
+      not:
+        inside:
+          kind: attribute
+    # Pulsar's and kombu's string form (amqp_connect_ssl_cert_reqs: cert_none)
+    - kind: string
+      regex: (?i)^['"](cert_none|ssl\.cert_none)['"]$

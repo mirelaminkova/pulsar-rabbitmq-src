@@ -1,0 +1,86 @@
+---
+# Install both hook types: pre-commit install --hook-type pre-commit --hook-type pre-push
+# Run everything:          pre-commit run --all-files
+#                          pre-commit run --hook-stage pre-push --all-files
+# Versions of the local Python hooks match requirements-dev.txt; keep them in sync.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+exclude: ^tests/galaxy_contract/  # vendored from the Galaxy component, kept byte-for-byte
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Local instead of the upstream hook: ansible-lint installs requirements.yml
+      # (git clones). git exports GIT_INDEX_FILE to hooks, and an inherited value
+      # makes those clones overwrite this repository's index during `git commit`.
+      - id: ansible-lint
+        name: ansible-lint
+        entry: env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE ansible-lint
+        language: python
+        additional_dependencies: [ansible-lint==26.11.0, ansible-core==2.16.20]
+        files: \.(ya?ml|j2)$
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest (100% coverage)
+        entry: pytest
+        language: python
+        additional_dependencies:
+          - pytest==9.2.0
+          - pytest-cov==7.1.0
+          - Jinja2==3.1.6
+          - PyYAML==6.0.3
+          - ansible-core==2.16.20
+          - pulsar-app[amqp]==0.15.15
+          - cryptography==50.0.2
+        files: ^(tests/|templates/|files/|group_vars/|filter_plugins/|playbook\.yml$|parameters\.yml$|tasks/|pyproject\.toml$)
+        pass_filenames: false
+
+      - id: ast-grep-test
+        name: ast-grep rule tests
+        entry: ast-grep test --skip-snapshot-tests
+        language: python
+        additional_dependencies: [ast-grep-cli==0.51.1]
+        files: ^(sgconfig\.yml$|ast-grep/)
+        pass_filenames: false
+
+      # pre-push: block the push on any finding.
+      - id: semgrep
+        name: semgrep (p/default, p/secrets)
+        entry: semgrep scan --config p/default --config p/secrets --error --metrics=off --quiet
+        language: python
+        additional_dependencies: [semgrep==1.184.0]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: ast-grep-scan
+        name: ast-grep scan
+        entry: ast-grep scan --error
+        language: python
+        additional_dependencies: [ast-grep-cli==0.51.1]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

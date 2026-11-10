@@ -11,7 +11,7 @@
   ansible.builtin.user:
     name: "{{ pulsar_user }}"
     system: true
-    home: "{{ pulsar_home }}"
+    home: "{{ pulsar_passwd_home }}"
     create_home: false
     shell: /usr/sbin/nologin
     groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
@@ -48,9 +48,10 @@
   loop: "{{ _pulsar_owned_dirs }}"
   register: _pulsar_reused
 
-# Pulsar's own processes stop changing the tree while it is handed over (Slurm jobs of
-# a user recreated on a running workspace may still run; the handover is safe anyway).
-# Restarted by the handler even when a later task fails (force_handlers).
+# Pulsar's own processes stop changing the tree while it is handed over. Slurm jobs of
+# a user recreated on a running workspace are not stopped: files they write meanwhile
+# keep the old owner (README: let jobs finish first). Restarted by the handler even
+# when a later task fails (force_handlers).
 - name: Stop Pulsar before handing over reused data
   ansible.builtin.command:
     argv: [systemctl, stop, pulsar.service]

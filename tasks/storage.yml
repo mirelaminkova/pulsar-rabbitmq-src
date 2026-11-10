@@ -15,8 +15,7 @@
   register: _pulsar_storage_check
   changed_when: "'set the sticky bit' in _pulsar_storage_check.stdout | default('')"
   failed_when: false
-  # Otherwise it only creates and removes a probe file (no --protect in check mode);
-  # check mode would skip it.
+  # Runs in check mode too: without --protect it only creates and removes a probe file.
   check_mode: false
 
 # Also when the script could not run at all (no rc then).
@@ -84,17 +83,12 @@
   when: item.enabled | bool
 
 - name: Start Docker and slurmd only with the storage mounted
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: templates/storage-dropin.conf.j2
     dest: "/etc/systemd/system/{{ item.unit }}.service.d/pulsar-storage.conf"
     owner: root
     group: root
     mode: '0644'
-    content: |
-      [Unit]
-      StartLimitIntervalSec=0
-      [Service]
-      ExecStartPre=/usr/bin/python3 -I {{ pulsar_storage_check_script }} {{ item.option }}{{ _pulsar_amqp.storage_path }}
-      {{ item.service }}RestartSec=10
   loop: "{{ _pulsar_storage_units }}"
   loop_control:
     label: "{{ item.unit }}"
@@ -124,6 +118,15 @@
     mode: '0755'
   when: _pulsar_amqp.docker_enabled
 
+# A Docker installed earlier (an upgrade, a new storage path, a preinstalled Docker)
+# moves to the storage through the handler; the role then finds daemon.json unchanged
+# and would restart nothing. Its running containers stop.
+- name: Find an installed Docker
+  ansible.builtin.stat:
+    path: /usr/bin/dockerd
+  register: _pulsar_dockerd
+  when: _pulsar_amqp.docker_enabled
+
 - name: Put Docker's data on the storage before Docker is installed
   ansible.builtin.copy:
     # As geerlingguy.docker writes it, so that the role finds nothing to change.
@@ -133,3 +136,4 @@
     group: root
     mode: '0644'
   when: _pulsar_amqp.docker_enabled
+  notify: Restart an installed Docker onto the storage

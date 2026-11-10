@@ -49,10 +49,14 @@ _pulsar_slurm: "{{ _pulsar_amqp.job_runner == 'slurm' }}"
 pulsar_user: pulsar
 # Pulsar's data on the attached storage (root-owned pulsar_storage_path), each directory
 # owned by the pulsar user. Staging is _pulsar_amqp.jobs_directory (<path>/staging).
-# The pulsar user's home, also Pulsar's working directory: Pulsar's own jobs keep only
-# HOME, PATH and TMPDIR of the unit's environment, so what they keep under ~ (Apptainer's
-# cache, Pulsar's tool dependencies) has to be on the storage through HOME.
+# HOME of Pulsar and its jobs (from the unit and the task prolog), and Pulsar's working
+# directory: Pulsar's own jobs keep only HOME, PATH and TMPDIR of the unit's
+# environment, so what they keep under ~ (Apptainer's cache, Pulsar's tool
+# dependencies) is on the storage through HOME.
 pulsar_home: "{{ _pulsar_amqp.storage_path }}/home"
+# The home in /etc/passwd never changes: usermod refuses while the user has processes
+# (a running Pulsar or Slurm job), so a new storage path would fail the deployment.
+pulsar_passwd_home: /var/lib/pulsar/home
 pulsar_persistence_dir: "{{ _pulsar_amqp.storage_path }}/persisted_data"
 pulsar_apptainer_cache_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_cache"
 pulsar_apptainer_tmp_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_tmp"
@@ -69,13 +73,14 @@ _pulsar_storage_units:
   - unit: docker
     enabled: "{{ _pulsar_amqp.docker_enabled }}"
     option: "--docker "
-    service: ""
+    service: [RestartSec=10]
   - unit: slurmd
     enabled: "{{ _pulsar_slurm | bool }}"
     option: ""
-    service: |
-      ExecStartPre=/usr/bin/mkdir -p {{ pulsar_slurmd_spool_dir }}
-      Restart=on-failure
+    service:
+      - "ExecStartPre=/usr/bin/mkdir -p {{ pulsar_slurmd_spool_dir }}"
+      - Restart=on-failure
+      - RestartSec=10
 # Of the pulsar user's directories found by tasks/pulsar.yml, those with files of
 # another (non-root) owner or group to hand over: data from an earlier workspace.
 _pulsar_handover: >-

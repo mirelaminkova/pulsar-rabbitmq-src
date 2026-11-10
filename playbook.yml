@@ -112,6 +112,15 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    # Notified in pre_tasks, so it runs before the roles; Docker not yet installed
+    # starts on the storage by itself.
+    - name: Restart an installed Docker onto the storage
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+        daemon_reload: true
+      when: _pulsar_dockerd.stat.exists | default(false)
+
     - name: Restart Pulsar
       ansible.builtin.systemd:
         name: pulsar

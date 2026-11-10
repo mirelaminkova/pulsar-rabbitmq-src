@@ -6,6 +6,7 @@ volume check itself, files/check_storage.py, is tested in tests/test_check_stora
 """
 
 import os
+import re
 import subprocess
 
 import pytest
@@ -120,11 +121,12 @@ def test_welcome_page_entry_matches_app_yml_staging_directory():
 def test_welcome_page_shows_the_storage_and_its_directories():
     page = render("welcome.html.j2", pulsar_storage_path="/data/vol/pulsar", pulsar_docker="true")
     assert "<strong>Storage:</strong> <code>/data/vol/pulsar</code>" in page
-    for leaf in ("persisted_data", "apptainer_cache", "apptainer_tmp", "docker"):
+    leaves = ("home", "persisted_data", "job_tmp", "apptainer_cache", "apptainer_tmp", "docker")
+    for leaf in (*leaves, "slurmd"):
         assert f"<code>/data/vol/pulsar/{leaf}</code>" in page
-    page = render("welcome.html.j2", pulsar_apptainer="false")
-    assert "apptainer_cache" not in page
-    assert f"{STORAGE}/docker" not in page
+    page = render("welcome.html.j2", pulsar_apptainer="false", pulsar_job_runner="local")
+    for leaf in ("apptainer_cache", "docker", "slurmd"):
+        assert f"{STORAGE}/{leaf}" not in page
 
 
 # --- Layout ----------------------------------------------------------------------
@@ -165,20 +167,28 @@ def test_docker_keeps_images_and_containers_on_the_storage():
     }
 
 
-def test_service_checks_the_storage_and_points_apptainer_at_it():
-    unit = render("pulsar.service.j2")
+@pytest.mark.parametrize("runner", ["slurm", "local"])
+def test_service_checks_the_storage_and_gives_jobs_their_home_and_tmp(runner):
+    unit = render("pulsar.service.j2", pulsar_job_runner=runner)
     # A failed or late mount would fail the start as a dependency, never retried.
     assert "RequiresMountsFor" not in unit
-    assert f"WorkingDirectory={STORAGE}/home\n" in unit
+    assert re.search(r"^After=.* local-fs.target remote-fs.target", unit, re.M)
+    # "-": with the volume missing, the check says why, not a chdir error.
+    assert f"WorkingDirectory=-{STORAGE}/home\n" in unit
     check = "/usr/local/libexec/pulsar-src/check_storage.py"
     assert f"ExecStartPre=+/usr/bin/python3 -I {check} {STORAGE}\n" in unit
-    assert f"Environment=APPTAINER_CACHEDIR={STORAGE}/apptainer_cache\n" in unit
-    assert f"Environment=APPTAINER_TMPDIR={STORAGE}/apptainer_tmp\n" in unit
-
-
-def test_service_without_apptainer_sets_no_apptainer_directories():
-    unit = render("pulsar.service.j2", pulsar_apptainer="false")
+    # Pulsar's own jobs keep only HOME, PATH and TMPDIR (Apptainer's cache under ~).
+    assert f"Environment=HOME={STORAGE}/home\n" in unit
+    assert f"Environment=TMPDIR={STORAGE}/job_tmp\n" in unit
     assert "APPTAINER" not in unit
+
+
+def test_passwd_home_never_changes_with_the_storage():
+    # usermod refuses a new home while the user has processes (Pulsar, Slurm jobs).
+    user = task_named(tasks("tasks/pulsar.yml"), "Create the Pulsar system user")
+    home = user["ansible.builtin.user"]["home"]
+    assert resolve_text(home) == resolve_text(home, pulsar_storage_path="/data/other/pulsar")
+    assert resolve_text(home) == "/var/lib/pulsar/home"
 
 
 # --- Tasks -----------------------------------------------------------------------
@@ -371,13 +381,15 @@ def test_slurm_keeps_job_files_on_the_storage_and_its_controller_state_local():
     assert "StateSaveLocation" not in config  # the role's /var/lib/slurm/slurmctld
 
 
-def run_script(template, tmp_path, job_id, **params):
+def run_script(template, tmp_path, job_id, step="batch", **params):
     """Render a Slurm task script with tmp_path as the storage and run it like slurmd."""
-    script = tmp_path / template
+    script = tmp_path.parent / f"{tmp_path.name}-{template}"
     script.write_text(render(template, pulsar_storage_path=str(tmp_path), **params))
     environment = {"PATH": os.environ["PATH"]}
     if job_id is not None:
         environment["SLURM_JOB_ID"] = job_id
+    if step is not None:
+        environment["SLURM_STEP_ID"] = step
     return subprocess.run(  # noqa: S603 - the rendered test script
         ["/bin/sh", str(script)], env=environment, capture_output=True, text=True, check=True
     ).stdout
@@ -389,20 +401,41 @@ def test_task_prolog_gives_each_slurm_job_its_storage_directories(tmp_path, appt
     lines = run_script("task_prolog.sh.j2", tmp_path, "42", pulsar_apptainer=apptainer)
     lines = lines.splitlines()
 
-    assert lines[0] == f"export TMPDIR={tmp_path}/job_tmp/42"
+    assert lines[0] == f"export HOME={tmp_path}/home"
+    assert lines[1] == f"export TMPDIR={tmp_path}/job_tmp/42"
     assert (tmp_path / "job_tmp" / "42").is_dir()
     apptainer_lines = [
         f"export APPTAINER_CACHEDIR={tmp_path}/apptainer_cache",
         f"export APPTAINER_TMPDIR={tmp_path}/apptainer_tmp",
     ]
-    assert lines[1:] == (apptainer_lines if apptainer == "true" else [])
+    assert lines[2:] == (apptainer_lines if apptainer == "true" else [])
 
 
-def test_task_epilog_removes_the_jobs_temporary_directory(tmp_path):
+def test_task_prolog_fails_the_task_without_its_temporary_directory(tmp_path):
+    # No job_tmp in the root-owned storage directory (or a full disk): the task fails
+    # instead of running with /tmp.
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o555)
+    try:
+        with pytest.raises(subprocess.CalledProcessError):
+            run_script("task_prolog.sh.j2", storage, "42")
+    finally:
+        storage.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    ("step", "removed"),
+    [("batch", True), ("4294967294", True), ("0", False), ("1", False), (None, False)],
+    ids=["batch", "batch-numeric", "srun-step-0", "srun-step-1", "no-step"],
+)
+def test_task_epilog_removes_the_temporary_directory_when_the_job_script_ends(
+    tmp_path, step, removed
+):
+    # srun steps and their tasks end while the job script still uses the directory.
     (tmp_path / "job_tmp" / "42" / "sub").mkdir(parents=True)
     (tmp_path / "job_tmp" / "43").mkdir()
-    run_script("task_epilog.sh.j2", tmp_path, "42")
-    assert os.listdir(tmp_path / "job_tmp") == ["43"]
+    run_script("task_epilog.sh.j2", tmp_path, "42", step=step)
+    assert sorted(os.listdir(tmp_path / "job_tmp")) == (["43"] if removed else ["42", "43"])
 
 
 @pytest.mark.parametrize("job_id", [None, "", "4 2", "../x", "*"])
@@ -411,17 +444,22 @@ def test_task_scripts_touch_nothing_without_a_numeric_job_id(tmp_path, template,
     (tmp_path / "job_tmp").mkdir()
     (tmp_path / "x").mkdir()
     assert run_script(template, tmp_path, job_id) == ""
-    assert set(os.listdir(tmp_path)) == {"job_tmp", "x", template}
+    assert set(os.listdir(tmp_path)) == {"job_tmp", "x"}
     assert os.listdir(tmp_path / "job_tmp") == []
 
 
-def test_task_prolog_is_installed_for_slurm():
-    task = task_named(
-        tasks("tasks/slurm.yml"), "Install the task prolog that keeps job files on the storage"
-    )
-    module = task["ansible.builtin.template"]
-    assert module["src"] == "templates/task_prolog.sh.j2"
-    assert resolve_text(module["dest"]) == TASK_PROLOG
+@pytest.mark.parametrize(
+    ("name", "template", "dest"),
+    [
+        ("Install the task prolog that keeps job files on the storage", "prolog", TASK_PROLOG),
+        ("Install the task epilog that removes a job's temporary directory", "epilog", TASK_EPILOG),
+    ],
+    ids=["prolog", "epilog"],
+)
+def test_task_scripts_are_installed_for_slurm(name, template, dest):
+    module = task_named(tasks("tasks/slurm.yml"), name)["ansible.builtin.template"]
+    assert module["src"] == f"templates/task_{template}.sh.j2"
+    assert resolve_text(module["dest"]) == dest
     assert (module["owner"], module["mode"]) == ("root", "0755")
 
 
@@ -454,19 +492,30 @@ def test_units_on_the_storage_start_only_with_it(unit, option):
     )
     [item] = [i for i in resolve_text(task["loop"], pulsar_docker="true") if i["unit"] == unit]
     check = "/usr/local/libexec/pulsar-src/check_storage.py"
-    content = resolve_text(task["ansible.builtin.copy"]["content"], item=item)
+    module = task["ansible.builtin.template"]
+    assert module["src"] == "templates/storage-dropin.conf.j2"
+    content = render("storage-dropin.conf.j2", item=item)
 
-    assert resolve_text(task["ansible.builtin.copy"]["dest"], item=item) == (
+    assert resolve_text(module["dest"], item=item) == (
         f"/etc/systemd/system/{unit}.service.d/pulsar-storage.conf"
     )
     assert "RequiresMountsFor" not in content
-    assert "StartLimitIntervalSec=0\n" in content
-    assert f"ExecStartPre=/usr/bin/python3 -I {check} {option}{STORAGE}\n" in content
-    assert "RestartSec=10\n" in content
-    # Docker keeps its own Restart=always; slurmd creates its spool if it is missing.
-    assert ("Restart=on-failure\n" in content) is (unit == "slurmd")
-    spool = f"ExecStartPre=/usr/bin/mkdir -p {STORAGE}/slurmd\n"
-    assert (spool in content) is (unit == "slurmd")
+    lines = [line for line in content.splitlines() if not line.startswith("# Generated")]
+    lines = lines[1:]  # the comment's second line
+    assert lines[:3] == [
+        "[Unit]",
+        "StartLimitIntervalSec=0",
+        "# Stopped before the volume is unmounted at shutdown.",
+    ]
+    assert lines[3:6] == [
+        "After=local-fs.target remote-fs.target",
+        "[Service]",
+        f"ExecStartPre=/usr/bin/python3 -I {check} {option}{STORAGE}",
+    ]
+    # Docker keeps its own Restart=always; slurmd creates its spool, after the check.
+    spool = f"ExecStartPre=/usr/bin/mkdir -p {STORAGE}/slurmd"
+    rest = [spool, "Restart=on-failure", "RestartSec=10"] if unit == "slurmd" else ["RestartSec=10"]
+    assert lines[6:] == rest
     assert task["notify"] == removal["notify"] == "Reload systemd units"
     for docker, slurm in (("true", "slurm"), ("false", "local")):
         variables = {"pulsar_docker": docker, "pulsar_job_runner": slurm}
@@ -474,6 +523,24 @@ def test_units_on_the_storage_start_only_with_it(unit, option):
         used = item["enabled"]
         assert condition(task["when"], item=item, **variables) is used
         assert condition(removal["when"], item=item, **variables) is not used
+
+
+def test_an_installed_docker_is_restarted_onto_the_storage():
+    # The role then finds daemon.json unchanged and would not restart it.
+    find = task_named(STORAGE_TASKS, "Find an installed Docker")
+    write = task_named(STORAGE_TASKS, "Put Docker's data on the storage before Docker is installed")
+    handler = task_named(load_yaml("playbook.yml")[0]["handlers"], write["notify"])
+    names = [t["name"] for t in STORAGE_TASKS]
+
+    assert names.index(find["name"]) < names.index(write["name"])
+    assert find["ansible.builtin.stat"]["path"] == "/usr/bin/dockerd"
+    assert handler["ansible.builtin.systemd"]["name"] == "docker"
+    assert handler["ansible.builtin.systemd"]["state"] == "restarted"
+    for installed in (True, False):
+        found = {"stat": {"exists": installed}}
+        assert condition(handler["when"], _pulsar_dockerd=found) is installed
+    # Docker disabled: nothing found, nothing written, the handler never notified.
+    assert condition(handler["when"], _pulsar_dockerd={"skipped": True}) is False
 
 
 def test_docker_starts_with_its_data_on_the_storage():

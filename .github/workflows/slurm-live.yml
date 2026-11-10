@@ -116,6 +116,10 @@ jobs:
           sudo grep -E '^(SlurmdSpoolDir|TmpFS|TaskProlog)=' /etc/slurm/slurm.conf
           sudo test -d /data/ci/pulsar/slurmd/
           # The task epilog removed the job's temporary directory.
+          for _ in $(seq 10); do
+            [ -z "$(sudo ls -A /data/ci/pulsar/job_tmp)" ] && break
+            sleep 1
+          done
           [ -z "$(sudo ls -A /data/ci/pulsar/job_tmp)" ]
           systemctl show slurmd --property=ExecStartPre --value | grep -q check_storage.py
       - name: Run an Apptainer container in a Slurm job
@@ -134,13 +138,12 @@ jobs:
             sleep 1
           done
           echo "The epilog did not stop the container"; exit 1
-      # The role, and so Docker's installation, is skipped here (the runner's own
-      # Docker), but the playbook wrote daemon.json and the unit's storage check.
+      # The role, and so Docker's installation, is skipped here: the playbook moved the
+      # runner's own, already installed Docker onto the storage (daemon.json, restart).
       - name: Docker keeps its data on the storage
         run: |
           sudo cat /etc/docker/daemon.json
           systemctl show docker --property=ExecStartPre --value | grep -q 'check_storage.py --docker'
-          sudo systemctl restart docker
           [ "$(sudo docker info -f '{{.DockerRootDir}}')" = /data/ci/pulsar/docker ]
           pulsar-live-job --require-slurm --command "docker run --rm $IMAGE true"
           sudo test -d /data/ci/pulsar/docker/overlay2

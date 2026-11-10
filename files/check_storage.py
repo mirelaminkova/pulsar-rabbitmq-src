@@ -7,8 +7,8 @@ Run as root: by the playbook before anything is installed (with --protect), and 
 pulsar, slurmd and (with --docker) Docker units before every start, so that none writes
 to the empty mount point on the root disk when the volume is missing, however SRC
 mounts it.
---protect first sets the sticky bit on a volume root that others can write to, so that
-they cannot rename the storage directory; it prints what it changed.
+On an accepted volume, --protect sets the sticky bit on a volume root that others can
+write to, so that they cannot rename the storage directory; it prints what it changed.
 
 Exit status 0 when the path can hold Pulsar's data, 1 with the reason on stdout when it
 cannot, 2 for wrong usage. The path need not exist yet; its deepest existing ancestor is

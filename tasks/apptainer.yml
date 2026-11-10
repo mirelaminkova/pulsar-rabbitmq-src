@@ -2,10 +2,15 @@
 # Apptainer for Pulsar's jobs, installed from the same PPA as the SRC
 # Galaxy component. The package is unprivileged (no setuid starter) and ships a
 # `singularity` command, which is what Galaxy's singularity_enabled destinations run.
-- name: Download Apptainer PPA key
-  ansible.builtin.get_url:
-    url: "{{ apptainer_key_url }}"
+# The PPA's key (fingerprint F6B0F5193D4F3301EF491FF0AFE36534FC6218AE) is in this
+# repository: a keyserver's export of it changes between downloads, so a rerun
+# would not be idempotent.
+- name: Install the Apptainer PPA key
+  ansible.builtin.copy:
+    src: files/apptainer.asc
     dest: "{{ apptainer_key_location }}"
+    owner: root
+    group: root
     mode: "0644"
 
 - name: Add Apptainer apt repository

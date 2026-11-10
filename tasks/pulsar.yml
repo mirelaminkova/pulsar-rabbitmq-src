@@ -50,6 +50,8 @@
     name:
       - "pulsar-app[amqp]=={{ pulsar_version }}"
       - psutil
+      # For the queued_drmaa manager (pulsar_job_runner: slurm).
+      - "drmaa=={{ pulsar_drmaa_version }}"
     virtualenv: "{{ pulsar_venv }}"
     # Absolute path: SRC runs Ansible through `uv run`, whose own python3 may
     # come first on PATH and is not usable by the pulsar system user.
@@ -150,8 +152,11 @@
   delay: 5
   changed_when: false
   failed_when: false
+  # CI's live Slurm check has no Galaxy broker and skips these two.
+  tags: [broker-check]
 
 - name: Fail when Pulsar cannot use Galaxy's broker
   ansible.builtin.fail:
     msg: "{{ _pulsar_amqp_check.stdout | default('', true) }} {{ _pulsar_amqp_check.stderr | default('', true) | trim }}"
   when: _pulsar_amqp_check.rc != 0
+  tags: [broker-check]

@@ -22,9 +22,14 @@ staging_directory: {{ _pulsar_amqp.jobs_directory | to_json }}
 persistence_directory: {{ pulsar_persistence_dir | to_json }}
 job_metrics_config_file: {{ (pulsar_config_dir ~ '/job_metrics_conf.xml') | to_json }}
 
-# Galaxy's runner uses manager "{{ _pulsar_amqp.manager }}".
+# Galaxy's runner uses manager "{{ _pulsar_amqp.manager }}"; only its name matters to Galaxy.
 managers:
   {{ _pulsar_amqp.manager | to_json }}:
+{% if _pulsar_slurm | bool %}
+    # Jobs go to Slurm on this workspace through DRMAA (DRMAA_LIBRARY_PATH in the unit).
+    type: queued_drmaa
+{% else %}
     type: queued_python
     num_concurrent_jobs: {{ pulsar_num_concurrent_jobs | int }}
+{% endif %}
     min_polling_interval: 0.5

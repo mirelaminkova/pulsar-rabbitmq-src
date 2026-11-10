@@ -50,16 +50,21 @@ PARAMS = [
 ]
 
 
+@pytest.mark.parametrize("runner", ["local", "slurm"])
 @pytest.mark.parametrize("params", PARAMS)
-def test_every_galaxy_setting_is_in_our_app_yml(params):
+def test_every_galaxy_setting_is_in_our_app_yml(params, runner):
+    params = {**params, "pulsar_job_runner": runner}
     ours = render_yaml("pulsar-app.yml.j2", **params)
     theirs = galaxy_app_yml(resolve("_pulsar_amqp", **params))
 
     for key in set(theirs) - {"message_queue_url", "managers"}:
         assert ours.get(key) == theirs[key], key
     assert set(ours["managers"]) == set(theirs["managers"])
+    # Galaxy's runner sees only the manager's name; the type is not part of the
+    # contract. Galaxy's template suggests queued_python: our local runner.
     for name, manager in theirs["managers"].items():
-        assert ours["managers"][name]["type"] == manager["type"]
+        expected = {"local": manager["type"], "slurm": "queued_drmaa"}[runner]
+        assert ours["managers"][name]["type"] == expected
 
 
 def test_url_is_galaxys_without_ssl_query():

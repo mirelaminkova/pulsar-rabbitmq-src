@@ -1,0 +1,151 @@
+---
+# The playbook on GitHub's Ubuntu runners with pulsar_job_runner: slurm, without a
+# Galaxy broker: Slurm as controller and node, then jobs through Pulsar's own
+# queued_drmaa manager (deployed venv, app.yml and unit environment) as the pulsar
+# user, with Apptainer, Docker and the epilog. The end-to-end run from Galaxy is #4.
+name: Slurm live check
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  # Weekly as well: a rotated PPA key or a changed package shows up before a deployment.
+  schedule:
+    - cron: "17 4 * * 1"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+# bash -eo pipefail: a failure before `| tee` fails the step.
+defaults:
+  run:
+    shell: bash
+jobs:
+  slurm-live:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Plain recap lines for the idempotence check.
+      ANSIBLE_NOCOLOR: "1"
+      ANSIBLE_LOCALHOST_WARNING: "false"
+      # A test image on quay.io, like Galaxy's biocontainers (no Docker Hub limits).
+      IMAGE: quay.io/prometheus/busybox:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install Ansible
+        run: python -m pip install "$(grep '^ansible-core' requirements-dev.txt)"
+      - name: Install Ansible dependencies
+        run: ansible-galaxy install -r requirements.yml
+      - name: Write the component parameters
+        run: |
+          cat > "$RUNNER_TEMP/params.yml" <<'PARAMS'
+          ansible_python_interpreter: /usr/bin/python3
+          pulsar_galaxy_fqdn: galaxy.example.org
+          pulsar_amqp_name: ci
+          pulsar_amqp_password: Ci.Password-1234
+          pulsar_job_runner: slurm
+          pulsar_docker: "true"
+          pulsar_apptainer: "true"
+          pulsar_cvmfs: "false"
+          pulsar_configure_src_proxy: false
+          PARAMS
+      # No Galaxy broker here, and the runner's own Docker Engine.
+      - name: Run the playbook
+        run: >-
+          ansible-playbook -i localhost, -c local playbook.yml
+          -e @"$RUNNER_TEMP/params.yml" --skip-tags broker-check,docker-install
+      - name: Run the playbook again (idempotent)
+        run: |
+          ansible-playbook -i localhost, -c local playbook.yml \
+            -e @"$RUNNER_TEMP/params.yml" --skip-tags broker-check,docker-install \
+            | tee "$RUNNER_TEMP/rerun.log"
+          grep -Eq 'localhost +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' "$RUNNER_TEMP/rerun.log"
+      - name: Show Slurm's node and configuration
+        run: |
+          sinfo -N -l
+          scontrol show node localhost
+          grep -Ev '^(#|$)' /etc/slurm/slurm.conf
+      # As the unit runs Pulsar: user, venv, app.yml and DRMAA_LIBRARY_PATH from the unit.
+      - name: Install the job script for the pulsar user
+        run: |
+          sudo install -m 0644 tests/live/pulsar_job.py /opt/pulsar/pulsar_job.py
+          drmaa=$(systemctl show pulsar --property=Environment --value | tr ' ' '\n' | grep '^DRMAA_LIBRARY_PATH=')
+          sudo tee /usr/local/bin/pulsar-live-job >/dev/null <<SCRIPT
+          #!/bin/sh
+          exec sudo -u pulsar env -C /var/lib/pulsar/home $drmaa \\
+            /opt/pulsar/venv/bin/python /opt/pulsar/pulsar_job.py /opt/pulsar/config/app.yml "\$@"
+          SCRIPT
+          sudo chmod 0755 /usr/local/bin/pulsar-live-job
+          cat /usr/local/bin/pulsar-live-job
+          sudo docker pull "$IMAGE"
+      - name: Run a job through Pulsar's queued_drmaa manager and Slurm
+        run: |
+          pulsar-live-job | tee "$RUNNER_TEMP/job.json"
+          python - "$RUNNER_TEMP/job.json" <<'CHECK'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          assert result["manager_type"] == "queued_drmaa", result
+          assert result["user"] == "pulsar", result
+          assert result["slurm_job"] != "none", result
+          assert result["cwd"].startswith("/mnt/pulsar/files/staging/"), result
+          CHECK
+      - name: Run an Apptainer container in a Slurm job
+        run: pulsar-live-job --require-slurm --command "singularity exec docker://$IMAGE true"
+      - name: Run a Docker container in a Slurm job
+        run: pulsar-live-job --require-slurm --command "docker run --rm $IMAGE true"
+      - name: The epilog stops the job's Docker container
+        run: |
+          sudo docker run -d --name pulsar-epilog-ci "$IMAGE" sleep 600
+          pulsar-live-job --require-slurm --container pulsar-epilog-ci
+          for _ in $(seq 60); do
+            [ "$(sudo docker inspect -f '{{.State.Running}}' pulsar-epilog-ci)" = false ] && exit 0
+            sleep 1
+          done
+          echo "The epilog did not stop the container"; exit 1
+      # pulsar_job_runner: local stops Slurm and Pulsar runs jobs itself; slurm again
+      # starts Slurm and Pulsar submits through it. Pulsar restarts both times.
+      - name: Switch to the local runner
+        run: |
+          # Restarted by the handler, not by systemd's Restart= (NRestarts counts those).
+          started() { systemctl show pulsar --property=ExecMainStartTimestampMonotonic --value; }
+          restarts() { systemctl show pulsar --property=NRestarts --value; }
+          before=$(started) auto=$(restarts)
+          ansible-playbook -i localhost, -c local playbook.yml -e @"$RUNNER_TEMP/params.yml" \
+            -e pulsar_job_runner=local --skip-tags broker-check,docker-install
+          # `! cmd` would not stop the step (bash -e ignores it).
+          if systemctl is-active slurmctld slurmd; then exit 1; fi
+          if systemctl is-enabled slurmctld slurmd; then exit 1; fi
+          sudo grep -q 'type: queued_python' /opt/pulsar/config/app.yml
+          if systemctl show pulsar --property=Environment --value | grep -q DRMAA; then exit 1; fi
+          [ "$(started)" != "$before" ] && [ "$(restarts)" = "$auto" ]
+          pulsar-live-job | tee "$RUNNER_TEMP/local.json"
+          grep -q '"manager_type": "queued_python"' "$RUNNER_TEMP/local.json"
+      - name: Switch back to Slurm
+        run: |
+          started() { systemctl show pulsar --property=ExecMainStartTimestampMonotonic --value; }
+          restarts() { systemctl show pulsar --property=NRestarts --value; }
+          before=$(started) auto=$(restarts)
+          ansible-playbook -i localhost, -c local playbook.yml -e @"$RUNNER_TEMP/params.yml" \
+            --skip-tags broker-check,docker-install
+          systemctl is-active slurmctld
+          systemctl is-active slurmd
+          [ "$(started)" != "$before" ] && [ "$(restarts)" = "$auto" ]
+          sudo grep -q 'type: queued_drmaa' /opt/pulsar/config/app.yml
+          pulsar-live-job --require-slurm
+      - name: Logs
+        if: always()
+        run: |
+          sudo tail -n 50 /var/log/slurm/slurmctld.log /var/log/slurm/slurmd.log || true
+          sudo journalctl -u pulsar --no-pager -n 50 || true

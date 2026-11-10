@@ -67,7 +67,7 @@ repos:
         files: |
           (?x)^(
             (tests|templates|files|group_vars|filter_plugins|tasks)/
-            | (playbook|parameters)\.yml$
+            | (playbook|parameters|requirements)\.yml$
             | pyproject\.toml$ | requirements-dev\.txt$ | \.pre-commit-config\.yaml$
           )
         pass_filenames: false

@@ -35,6 +35,9 @@ jobs:
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Install tooling
         run: python -m pip install -r requirements-dev.txt
+      # The pytest hook renders galaxyproject.slurm's slurm.conf template (tests/test_slurm.py).
+      - name: Install Ansible dependencies
+        run: ansible-galaxy install -r requirements.yml
       - name: pre-commit stage hooks
         run: pre-commit run --all-files --show-diff-on-failure
       - name: pre-push stage hooks (semgrep, ast-grep)
@@ -54,5 +57,8 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - name: Install tooling
         run: python -m pip install -r requirements-dev.txt
+      # tests/test_slurm.py renders galaxyproject.slurm's slurm.conf template.
+      - name: Install Ansible dependencies
+        run: ansible-galaxy install -r requirements.yml
       - name: pytest
         run: pytest

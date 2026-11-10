@@ -1,0 +1,120 @@
+---
+# A single-node Slurm for Pulsar's queued_drmaa manager (pulsar_job_runner: slurm):
+# this workspace is controller and compute node. Settings in group_vars/all.yml.
+# The PPA's key (fingerprint 8DE68488997C5C6BA19021136F2CC56412788738) is in this
+# repository: a keyserver's export of it changes between downloads.
+- name: Install the slurm-drmaa PPA key
+  ansible.builtin.copy:
+    src: files/slurm-drmaa.asc
+    dest: "{{ slurm_drmaa_key_location }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Whoever can upload to the PPA could otherwise replace any package (libslurm,
+# munge, ...) with a higher version; with this, only slurm-drmaa comes from it.
+- name: Take only slurm-drmaa from the slurm-drmaa PPA
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/slurm-drmaa
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Package: *
+      Pin: release o={{ slurm_drmaa_origin }}
+      Pin-Priority: -1
+
+      Package: slurm-drmaa*
+      Pin: release o={{ slurm_drmaa_origin }}
+      Pin-Priority: 500
+
+- name: Add the slurm-drmaa PPA
+  ansible.builtin.apt_repository:
+    repo: deb [signed-by={{ slurm_drmaa_key_location }}] {{ slurm_drmaa_repo_url }} {{ ansible_distribution_release }} main
+    state: present
+    filename: slurm-drmaa
+    update_cache: true
+
+# Before the role, which installs Slurm without refreshing the package lists.
+- name: Install the Slurm DRMAA library
+  ansible.builtin.apt:
+    # jq reads Galaxy's container_config.json in the Docker epilog.
+    name: "{{ ['slurm-drmaa1'] + (['jq'] if _pulsar_amqp.docker_enabled else []) }}"
+    state: present
+    update_cache: true
+
+- name: Check the Slurm DRMAA library
+  ansible.builtin.stat:
+    path: "{{ pulsar_drmaa_library_path }}"
+  register: _pulsar_drmaa_library
+  failed_when: not _pulsar_drmaa_library.stat.exists
+
+- name: Install Slurm as controller and compute node
+  ansible.builtin.include_role:
+    name: galaxyproject.slurm
+
+# Slurm runs the epilog as root after every job; it only stops the job's container.
+- name: Install the epilog that stops a job's Docker container
+  ansible.builtin.copy:
+    src: files/epilog.sh
+    dest: "{{ pulsar_slurm_epilog }}"
+    owner: root
+    group: root
+    mode: '0755'
+  when: _pulsar_amqp.docker_enabled
+
+- name: Remove the epilog without Docker
+  ansible.builtin.file:
+    path: "{{ pulsar_slurm_epilog }}"
+    state: absent
+  when: not _pulsar_amqp.docker_enabled
+
+# The munge package generates a random key per workspace on installation; with one
+# node it never leaves this workspace, and the playbook neither ships nor reads it.
+- name: Check the munge key
+  ansible.builtin.stat:
+    path: /etc/munge/munge.key
+    get_checksum: false
+    get_mime: false
+  register: _pulsar_munge_key
+
+- name: Require a private munge key
+  ansible.builtin.assert:
+    that:
+      - _pulsar_munge_key.stat.exists
+      - _pulsar_munge_key.stat.pw_name == 'munge'
+      - _pulsar_munge_key.stat.mode in ['0400', '0600']
+    fail_msg: /etc/munge/munge.key must exist, belong to munge and be readable by munge only.
+    quiet: true
+
+- name: Apply pending Slurm restarts
+  ansible.builtin.meta: flush_handlers
+
+# A node configured with more CPUs or memory than it has is drained, and then no
+# job starts; slurmd also needs a moment to register after a restart.
+- name: Wait until the Slurm node accepts jobs
+  ansible.builtin.command:
+    argv: [sinfo, --noheader, --nodes=localhost, --format=%T]
+  register: _pulsar_slurm_node
+  until: _pulsar_slurm_node.stdout | trim in _pulsar_slurm_ready_states
+  retries: 24
+  delay: 5
+  changed_when: false
+  failed_when: false
+
+- name: Show why the Slurm node cannot run jobs
+  ansible.builtin.command:
+    argv: [scontrol, show, node, localhost]
+  register: _pulsar_slurm_node_details
+  changed_when: false
+  failed_when: false
+  when: _pulsar_slurm_node.stdout | trim not in _pulsar_slurm_ready_states
+
+- name: Fail when the Slurm node cannot run jobs
+  ansible.builtin.fail:
+    msg: >-
+      The Slurm node is '{{ _pulsar_slurm_node.stdout | default('', true) | trim }}'
+      {{ _pulsar_slurm_node.stderr | default('', true) | trim }}
+      {{ _pulsar_slurm_node_details.stdout | default('', true) }}.
+      See /var/log/slurm/slurmd.log and /var/log/slurm/slurmctld.log.
+  when: _pulsar_slurm_node.stdout | trim not in _pulsar_slurm_ready_states

@@ -18,7 +18,10 @@ DEFAULTS = {
     "docker_enabled": False,
     "singularity_enabled": True,
     "cvmfs": True,
+    "job_runner": "slurm",
 }
+# pulsar_job_runner: Slurm on this workspace through DRMAA, or Pulsar itself.
+_JOB_RUNNERS = ("slurm", "local")
 
 # As in Galaxy's parser.
 _NAME = re.compile(r"[a-z0-9_-]+")
@@ -55,9 +58,9 @@ def pulsar_amqp_settings(params):
     """Normalise the component parameters and derive the names Galaxy and Pulsar use.
 
     ``params`` has the keys galaxy_fqdn, port, name, password, manager, jobs_directory,
-    docker_enabled, singularity_enabled and cvmfs. Empty values (how SRC passes an unset
-    parameter) get Galaxy's defaults. The result is meaningful only without
-    :func:`pulsar_amqp_errors`.
+    docker_enabled, singularity_enabled, cvmfs and job_runner. Empty values (how SRC passes an
+    unset parameter) get Galaxy's defaults, or this component's for cvmfs and job_runner. The
+    result is meaningful only without :func:`pulsar_amqp_errors`.
     """
     port = _text(params.get("port")) or str(DEFAULTS["port"])
     settings = {
@@ -67,6 +70,8 @@ def pulsar_amqp_settings(params):
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
         "jobs_directory": _text(params.get("jobs_directory")) or DEFAULTS["jobs_directory"],
+        # Only this workspace sees the runner; Galaxy's entry stays the same.
+        "job_runner": _text(params.get("job_runner")).lower() or DEFAULTS["job_runner"],
     }
     for key in ("docker_enabled", "singularity_enabled", "cvmfs"):
         settings[key] = _boolean(params.get(key), DEFAULTS[key])
@@ -172,6 +177,9 @@ def pulsar_amqp_errors(settings):
     ):
         if not isinstance(settings[key], bool):
             errors.append(f"{parameter} must be true or false, got '{settings[key]}'")
+
+    if settings["job_runner"] not in _JOB_RUNNERS:
+        errors.append(f"pulsar_job_runner must be slurm or local, got '{settings['job_runner']}'")
     return errors
 
 

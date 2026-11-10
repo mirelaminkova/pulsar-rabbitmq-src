@@ -1,0 +1,14 @@
+---
+# pulsar_job_runner: local after slurm: Pulsar runs jobs itself, so Slurm stops.
+# Switch without active jobs (Pulsar reports them as lost); Slurm stays installed
+# for a switch back.
+- name: Find the Slurm services
+  ansible.builtin.service_facts:
+
+- name: Stop and disable Slurm
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [slurmctld, slurmd]
+  when: (item ~ '.service') in ansible_facts.services

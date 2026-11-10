@@ -1,0 +1,5 @@
+---
+# This repository's playbook on the Pulsar workspace (variable_host), with the component
+# parameters of molecule.yml, against the Galaxy workspace's RabbitMQ.
+- name: Converge
+  ansible.builtin.import_playbook: ../../playbook.yml

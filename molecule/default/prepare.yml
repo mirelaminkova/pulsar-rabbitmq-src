@@ -1,0 +1,252 @@
+---
+# The test images have no Python; Ansible's modules need it.
+- name: Prepare both workspaces for Ansible
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install Python
+      ansible.builtin.raw: >-
+        command -v python3 >/dev/null ||
+        (apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -q -y python3)
+      changed_when: false
+
+# A test CA and a certificate for the Galaxy workspace's hostname, standing in for the
+# certificate of the SRC Nginx plugin (Let's Encrypt or ZeroSSL) the Galaxy component's
+# RabbitMQ uses. Pulsar trusts the CA through the system CA bundle, as it trusts a public CA
+# on SRC: its certificate and hostname verification stay on.
+- name: Create the test CA and the Galaxy workspace's certificate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+  tasks:
+    - name: Create the certificate directory
+      ansible.builtin.file:
+        path: "{{ tls_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: Write the certificate extensions
+      ansible.builtin.copy:
+        dest: "{{ tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: '0600'
+      loop:
+        - name: ca.cnf
+          content: |
+            [req]
+            distinguished_name = dn
+            x509_extensions = v3_ca
+            prompt = no
+            [dn]
+            CN = Molecule test CA
+            [v3_ca]
+            basicConstraints = critical, CA:TRUE
+            keyUsage = critical, keyCertSign, cRLSign
+            subjectKeyIdentifier = hash
+        - name: server.ext
+          content: |
+            basicConstraints = critical, CA:FALSE
+            keyUsage = critical, digitalSignature, keyEncipherment
+            extendedKeyUsage = serverAuth
+            subjectAltName = DNS:galaxy.molecule.test
+            subjectKeyIdentifier = hash
+            authorityKeyIdentifier = keyid
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create the test CA
+      ansible.builtin.command:
+        argv: [openssl, req, -x509, -config, "{{ tls_dir }}/ca.cnf", -newkey, rsa:2048, -nodes,
+               -days, "2", -keyout, "{{ tls_dir }}/ca.key", -out, "{{ tls_dir }}/ca.pem"]
+        creates: "{{ tls_dir }}/ca.pem"
+
+    - name: Create the Galaxy workspace's key and certificate request
+      ansible.builtin.command:
+        argv: [openssl, req, -newkey, rsa:2048, -nodes, -subj, /CN=galaxy.molecule.test,
+               -keyout, "{{ tls_dir }}/key.pem", -out, "{{ tls_dir }}/server.csr"]
+        creates: "{{ tls_dir }}/server.csr"
+
+    - name: Sign the Galaxy workspace's certificate with the test CA
+      ansible.builtin.command:
+        argv: [openssl, x509, -req, -in, "{{ tls_dir }}/server.csr", -days, "2",
+               -CA, "{{ tls_dir }}/ca.pem", -CAkey, "{{ tls_dir }}/ca.key", -CAcreateserial,
+               -extfile, "{{ tls_dir }}/server.ext", -out, "{{ tls_dir }}/server.pem"]
+        creates: "{{ tls_dir }}/server.pem"
+
+# The Galaxy component's RabbitMQ as tasks/rabbitmq.yml in src-component-galaxy-amqp sets it
+# up: Ubuntu's package, its rabbitmq.conf (tests/galaxy_contract/), node rabbit@localhost, no
+# guest user, the entry's vhost /pulsar/<name> and user <name>, and Galaxy's own user.
+- name: Prepare the Galaxy workspace
+  hosts: galaxy_workspace
+  gather_facts: false
+  vars:
+    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+    pulsar: "{{ hostvars['pulsar'] }}"
+    vhost: "/pulsar/{{ pulsar.pulsar_amqp_name }}"
+    node: rabbit@localhost
+    _galaxy_rabbitmq_local_port: 5672
+    _galaxy_rabbitmq_port: "{{ pulsar.pulsar_amqp_port }}"
+    _galaxy_rabbitmq_tls_dir: /etc/rabbitmq/tls
+    _galaxy_rabbitmq_tls_versions: [tlsv1.3, tlsv1.2]
+  tasks:
+    - name: Create the rabbitmq group
+      ansible.builtin.group:
+        name: rabbitmq
+        system: true
+
+    - name: Create the rabbitmq user
+      ansible.builtin.user:
+        name: rabbitmq
+        group: rabbitmq
+        system: true
+        home: /var/lib/rabbitmq
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create the RabbitMQ configuration directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: rabbitmq
+        mode: '0750'
+      loop: [/etc/rabbitmq, "{{ _galaxy_rabbitmq_tls_dir }}"]
+
+    - name: Install the certificate chain and key
+      ansible.builtin.copy:
+        dest: "{{ _galaxy_rabbitmq_tls_dir }}/{{ item.dest }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: rabbitmq
+        mode: '0640'
+      loop:
+        - dest: fullchain.pem
+          content: "{{ lookup('file', tls_dir ~ '/server.pem') }}\n{{ lookup('file', tls_dir ~ '/ca.pem') }}\n"
+        - dest: key.pem
+          content: "{{ lookup('file', tls_dir ~ '/key.pem') }}\n"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Configure RabbitMQ with the Galaxy component's template
+      ansible.builtin.template:
+        src: ../../tests/galaxy_contract/rabbitmq.conf.j2
+        dest: /etc/rabbitmq/rabbitmq.conf
+        owner: root
+        group: rabbitmq
+        mode: '0640'
+
+    - name: Set the RabbitMQ node name
+      ansible.builtin.copy:
+        dest: /etc/rabbitmq/rabbitmq-env.conf
+        content: "NODENAME={{ node }}\n"
+        owner: root
+        group: rabbitmq
+        mode: '0644'
+
+    - name: Install RabbitMQ and the Galaxy client's Python
+      ansible.builtin.apt:
+        name: [rabbitmq-server, python3-venv]
+        state: present
+        update_cache: true
+
+    - name: Start RabbitMQ
+      ansible.builtin.systemd_service:
+        name: rabbitmq-server
+        state: started
+        enabled: true
+
+    - name: Wait for RabbitMQ
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", await_startup]
+      changed_when: false
+
+    - name: Remove the guest user
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, delete_user, guest]
+      register: _guest
+      changed_when: _guest.rc == 0
+      failed_when: false
+
+    - name: Create the Pulsar's vhost
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_vhost, "{{ vhost }}"]
+      changed_when: true
+
+    # Passwords on stdin, as the Galaxy component sets them.
+    - name: Create the Pulsar's user and Galaxy's user
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_user, "{{ item.name }}"]
+        stdin: "{{ item.password }}"
+      loop:
+        - {name: "{{ pulsar.pulsar_amqp_name }}", password: "{{ pulsar.pulsar_amqp_password }}"}
+        - {name: galaxy, password: "{{ molecule_galaxy_amqp_password }}"}
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      no_log: true
+
+    - name: Give both users the Pulsar's vhost
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, set_permissions, -p, "{{ vhost }}", "{{ item }}", ".*", ".*", ".*"]
+      loop: ["{{ pulsar.pulsar_amqp_name }}", galaxy]
+      changed_when: true
+
+    - name: Create the Galaxy client's directory
+      ansible.builtin.file:
+        path: /opt/galaxy-client
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install the Galaxy client of the end-to-end test
+      ansible.builtin.copy:
+        src: "../../tests/e2e/{{ item }}"
+        dest: "/opt/galaxy-client/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [galaxy_job.py, requirements-galaxy.txt]
+
+    - name: Install Pulsar's client library as Galaxy pins it
+      ansible.builtin.pip:
+        requirements: /opt/galaxy-client/requirements-galaxy.txt
+        virtualenv: /opt/galaxy-client/venv
+        virtualenv_command: /usr/bin/python3 -m venv
+
+- name: Prepare the Pulsar workspace
+  hosts: pulsar_workspace
+  gather_facts: false
+  vars:
+    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+  tasks:
+    - name: Install the CA bundle tools
+      ansible.builtin.apt:
+        name: ca-certificates
+        state: present
+        update_cache: true
+
+    - name: Add the test CA to the system's trusted CAs
+      ansible.builtin.copy:
+        src: "{{ tls_dir }}/ca.pem"
+        dest: /usr/local/share/ca-certificates/molecule-test-ca.crt
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Update the system CA bundle
+
+    # SRC mounts an attached volume at /data/<volume name>; here the runner's ext4 volume.
+    - name: Check that the storage is a separate mount
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --output, FSTYPE, --mountpoint, /data/molecule]
+      register: _storage_mount
+      changed_when: false
+      failed_when: _storage_mount.stdout | trim != 'ext4'
+
+  handlers:
+    - name: Update the system CA bundle
+      ansible.builtin.command:
+        argv: [update-ca-certificates]
+      changed_when: true

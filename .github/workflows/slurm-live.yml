@@ -2,7 +2,7 @@
 # The playbook on GitHub's Ubuntu runners with pulsar_job_runner: slurm, without a
 # Galaxy broker: Slurm as controller and node, then jobs through Pulsar's own
 # queued_drmaa manager (deployed venv, app.yml and unit environment) as the pulsar
-# user, with Apptainer, Docker and the epilog. The end-to-end run from Galaxy is #4.
+# user, with Apptainer, Docker and the epilog. The run from Galaxy is in molecule.yml.
 name: Slurm live check
 on:
   pull_request:

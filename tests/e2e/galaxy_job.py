@@ -1,16 +1,22 @@
 """Galaxy's side of one job on this Pulsar over AMQP, for the end-to-end test.
 
-Does for one small job what Galaxy's PulsarMQJobRunner (lib/galaxy/jobs/runners/pulsar.py)
+Does for one small job what Galaxy 26.1's PulsarMQJobRunner (lib/galaxy/jobs/runners/pulsar.py)
 does, with Pulsar's client library as Galaxy pins it (pulsar-galaxy-lib, kombu): builds the
 client manager from the runner's parameters, consumes status updates and acknowledgements,
 lays out the job with the destination's parameters (``rewrite_parameters``: the command
 line gets Pulsar's paths from the client's PathMapper, as Galaxy's PulsarComputeEnvironment
-does), submits it and waits for the final status, then un-stages it as Galaxy would.
+does), submits it and waits for the final status, then un-stages it as Galaxy would. The
+runner's code is copied here, not vendored: the contract job does not check it.
+
+Not exercised: Galaxy's tool, dependency and container handling, so the destination's
+``singularity_enabled``, ``remote_metadata`` and ``outputs_to_working_directory`` have no
+effect on this job.
 
 With ``default_file_action: remote_transfer`` Pulsar fetches the inputs from and posts the
 outputs to Galaxy's job files API at ``galaxy_url`` (/api/jobs/<id>/files?job_key=..). A small
-HTTP server stands in for it: it serves and accepts only files of this job's directory,
-for this job's key.
+HTTP server stands in for it, for this job's key only: it serves the files of Galaxy's
+temporary directory (datasets and job directory) and accepts uploads only to the job's
+output datasets and its job directory.
 
     python galaxy_job.py CONFIG_JSON [--timeout SECONDS]
 
@@ -43,38 +49,51 @@ from pulsar.client import (
     submit_job,
 )
 
-# PulsarMQJobRunner.destination_defaults: these win over the destination's own values.
+# PulsarMQJobRunner.destination_defaults, which _populate_parameter_defaults applies only to
+# parameters the destination does not set.
 DESTINATION_DEFAULTS = {
     "default_file_action": "remote_transfer",
     "rewrite_parameters": "true",
     "dependency_resolution": "remote",
 }
+# PulsarJobRunner._pulsar_client_manager_args passes runner parameters with these prefixes.
+CLIENT_MANAGER_PREFIXES = ("amqp_", "transport_", "relay_")
 FINAL_STATES = ("complete", "failed", "cancelled", "lost")
 INPUT_TEXT = "pulsar\ngalaxy\nrabbitmq\n"
 # The tool: sorts the input into the first output and reports where it ran into the second.
-# It runs long enough for Pulsar's monitor to see it running and publish that.
+# Pulsar's monitor publishes "running" when a poll (every min_polling_interval, 0.5 s in
+# app.yml) finds the job running; 10 s leaves room for a slow Slurm poll on a busy runner.
 COMMAND = (
-    "sleep 3 && sort {input} > {output} && "
+    "sleep 10 && sort {input} > {output} && "
     'echo "user=$(id -un) slurm_job=${{SLURM_JOB_ID:-none}} cwd=$PWD" > {report}'
 )
 
 
 class JobFiles:
-    """Galaxy's job files API for one job: files below ``root``, for ``job_key`` only."""
+    """Galaxy's job files API for one job and its ``job_key``.
 
-    def __init__(self, root, job_key):
+    Serves files below ``root``; accepts uploads to the ``outputs`` paths and below
+    ``job_dir`` (Pulsar also posts the job's metrics there).
+    """
+
+    def __init__(self, root, job_key, job_dir=None, outputs=()):
         self.root = Path(root).resolve()
         self.job_key = job_key
+        self.job_dir = Path(job_dir or root).resolve()
+        self.outputs = {Path(output).resolve() for output in outputs}
         self.received = {}
         self.served = []
 
     def path(self, query):
-        """The requested path, or None for a wrong key or a path outside the job."""
+        """The requested path, or None for a wrong key or a path outside ``root``."""
         params = parse_qs(query)
         if params.get("job_key") != [self.job_key] or len(params.get("path", [])) != 1:
             return None
         path = Path(params["path"][0]).resolve()
         return path if path.is_relative_to(self.root) else None
+
+    def writable(self, path):
+        return path in self.outputs or path.is_relative_to(self.job_dir)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -95,56 +114,72 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_HEAD(self):
+    def _readable(self):
         path = self._path()
         if path is None or not path.is_file():
             self._reply(403 if path is None else 404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Length", str(path.stat().st_size))
-        self.end_headers()
+            return None
+        return path
+
+    def do_HEAD(self):
+        path = self._readable()
+        if path is not None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.end_headers()
 
     def do_GET(self):
-        path = self._path()
-        if path is None or not path.is_file():
-            self._reply(403 if path is None else 404)
-            return
-        self.server.job_files.served.append(str(path))
-        self._reply(200, path.read_bytes())
+        path = self._readable()
+        if path is not None:
+            self.server.job_files.served.append(str(path))
+            self._reply(200, path.read_bytes())
 
     def do_POST(self):
         path = self._path()
-        if path is None:
+        if path is None or not self.server.job_files.writable(path):
             self._reply(403)
             return
-        body = self.rfile.read(int(self.headers["Content-Length"]))
-        header = f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode()
-        message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
-        [content] = [
-            part.get_payload(decode=True)
-            for part in message.iter_parts()
-            if part.get_param("name", header="content-disposition") == "file"
-        ]
+        content = self._uploaded_file()
+        if content is None:
+            self._reply(400)
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         self.server.job_files.received[str(path)] = content.decode()
         self._reply(200, b"{}")
 
+    def _uploaded_file(self):
+        """The multipart form's one ``file`` field (Pulsar's post_file), or None."""
+        length = self.headers["Content-Length"]
+        if not (length or "").isdigit():
+            return None
+        body = self.rfile.read(int(length))
+        header = f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode()
+        message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
+        if not message.is_multipart():
+            return None
+        files = [
+            part.get_payload(decode=True)
+            for part in message.iter_parts()
+            if part.get_param("name", header="content-disposition") == "file"
+        ]
+        return files[0] if len(files) == 1 else None
 
-def serve_job_files(job_files, galaxy_url):
-    """Start the job files API on galaxy_url's port (all interfaces) in a thread."""
-    server = ThreadingHTTPServer(("", urlsplit(galaxy_url).port), _Handler)
+
+def serve_job_files(job_files, address):
+    """Start the job files API on ``address`` (port 0: any free one) in a thread."""
+    server = ThreadingHTTPServer(address, _Handler)
     server.job_files = job_files
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
 
 def client_manager_kwargs(runner):
-    """PulsarJobRunner._init_client_manager: these four, and every amqp_ and transport_ one."""
+    """PulsarJobRunner._pulsar_client_manager_args for the runner's parameters."""
     kwargs = {"manager": runner.get("manager"), "cache": None, "transport": None}
     kwargs["persistence_directory"] = None
     kwargs.update(
-        {key: value for key, value in runner.items() if key.startswith(("amqp_", "transport_"))}
+        {key: value for key, value in runner.items() if key.startswith(CLIENT_MANAGER_PREFIXES)}
     )
     return kwargs
 
@@ -167,8 +202,13 @@ class StatusUpdates:
             self.done.set()
 
 
-def run_job(config, timeout=600, root=None):
-    runner, destination = config["runner"], {**config["destination"], **DESTINATION_DEFAULTS}
+def run_job(config, timeout=600, root=None, bind=""):
+    """Run the job; the job files API listens on ``bind`` and galaxy_url's port.
+
+    With port 0 in galaxy_url, the API takes a free port and galaxy_url gets it.
+    """
+    runner = config["runner"]
+    destination = {**DESTINATION_DEFAULTS, **config["destination"]}
     job_id = f"e2e-{uuid.uuid4().hex}"
     job_key = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(dir=root) as galaxy_dir:
@@ -181,17 +221,24 @@ def run_job(config, timeout=600, root=None):
         dataset_input, dataset_output, report = (objects / f"dataset_{n}.dat" for n in (1, 2, 3))
         dataset_input.write_text(INPUT_TEXT)
 
-        job_files = JobFiles(galaxy_dir, job_key)
-        server = serve_job_files(job_files, runner["galaxy_url"])
+        job_files = JobFiles(galaxy_dir, job_key, job_dir, outputs=(dataset_output, report))
+        url = urlsplit(runner["galaxy_url"])
+        server = serve_job_files(job_files, (bind, url.port))
+        galaxy_url = f"{url.scheme}://{url.hostname}:{server.server_port}"
         manager = build_client_manager(**client_manager_kwargs(runner))
         updates = StatusUpdates(job_id)
         try:
             # PulsarMQJobRunner._monitor
             manager.ensure_has_status_update_callback(updates)
             manager.ensure_has_ack_consumers()
-            files_endpoint = f"{runner['galaxy_url']}/api/jobs/{job_id}/files?job_key={job_key}"
+            # PulsarJobRunner.get_client
+            endpoint = f"{galaxy_url}/api/jobs/{job_id}"
             client = manager.get_client(
-                destination, job_id=job_id, files_endpoint=files_endpoint, env=[]
+                destination,
+                job_id=job_id,
+                files_endpoint=f"{endpoint}/files?job_key={job_key}",
+                token_endpoint=f"{endpoint}/oidc-tokens?job_key={job_key}",
+                env=[],
             )
             tool = SimpleNamespace(id="e2e_sort", version="1.0", tool_dir=str(tool_dir))
             remote_job_config = client.setup(tool.id, tool.version, False)
@@ -250,7 +297,8 @@ def run_job(config, timeout=600, root=None):
         "inputs_served": len(job_files.served),
         "collection_failures": [str(failure) for failure in collection_failures],
         "received": received,
-        **dict(field.split("=", 1) for field in fields if "=" in field),
+        # What the job reported about itself: user, slurm_job and cwd.
+        "report": dict(field.split("=", 1) for field in fields if "=" in field),
     }
 
 

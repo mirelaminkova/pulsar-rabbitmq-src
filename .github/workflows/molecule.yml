@@ -64,5 +64,15 @@ jobs:
           sudo mkdir -p "$MOLECULE_STORAGE"
           sudo mount -o loop /mnt/molecule-volume.img "$MOLECULE_STORAGE"
           findmnt "$MOLECULE_STORAGE"
+      # Containers stay up on failure for the logs below.
       - name: Molecule test
-        run: molecule test
+        run: molecule test --destroy=never
+      - name: Logs
+        if: failure()
+        run: |
+          docker exec pulsar journalctl --no-pager -n 100 -u pulsar -u slurmd -u slurmctld -u munge || true
+          docker exec pulsar tail -n 50 /var/log/slurm/slurmctld.log /var/log/slurm/slurmd.log || true
+          docker exec galaxy journalctl --no-pager -n 100 -u rabbitmq-server || true
+      - name: Destroy the containers
+        if: always()
+        run: molecule destroy

@@ -32,6 +32,26 @@
           - app.managers._default_.type == 'queued_drmaa'
         quiet: true
 
+    # The negative case: the same settings with another hostname than the certificate's
+    # are refused, so the success above is verification at work.
+    - name: Write app.yml with a hostname the certificate does not name
+      ansible.builtin.copy:
+        dest: /root/app-wrong-hostname.yml
+        content: >-
+          {{ _app_yml.content | b64decode | from_yaml
+             | combine({'amqp_connect_ssl_server_hostname': 'wrong.molecule.test'}) | to_nice_yaml }}
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Check the connection with the wrong hostname
+      ansible.builtin.command:
+        argv: [/opt/pulsar/venv/bin/python, /opt/pulsar/check_amqp.py, /root/app-wrong-hostname.yml]
+      register: _wrong_hostname
+      changed_when: false
+      failed_when: _wrong_hostname.rc != 1 or 'certificate' not in _wrong_hostname.stdout | lower
+
     - name: Get the state of the services
       ansible.builtin.command:
         argv: [systemctl, is-active, pulsar, munge, slurmctld, slurmd]
@@ -71,9 +91,9 @@
   hosts: galaxy_workspace
   gather_facts: false
   vars:
-    node: rabbit@localhost
+    node: "{{ molecule_rabbitmq_node }}"
     pulsar: "{{ hostvars['pulsar'] }}"
-    vhost: "/pulsar/{{ pulsar.pulsar_amqp_name }}"
+    vhost: "{{ molecule_vhost }}"
     project: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
     ephemeral: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
   tasks:
@@ -160,6 +180,6 @@
           - "'running' in result.states"
           - result.inputs_served >= 1
           - result.received.output == "galaxy\npulsar\nrabbitmq\n"
-          - result.user == 'pulsar'
-          - result.slurm_job != 'none'
-          - result.cwd.startswith(pulsar.pulsar_storage_path ~ '/staging/' ~ result.job_id ~ '/')
+          - result.report.user == 'pulsar'
+          - result.report.slurm_job != 'none'
+          - result.report.cwd.startswith(pulsar.pulsar_storage_path ~ '/staging/' ~ result.job_id ~ '/')

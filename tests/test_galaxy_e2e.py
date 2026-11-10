@@ -8,7 +8,6 @@ staging over HTTP, the status updates and the un-staging are tested without a br
 
 import http.client
 import json
-import socket
 import uuid
 
 import pytest
@@ -21,10 +20,8 @@ from tests.helpers import PASSWORD, render, resolve
 GALAXY_PASSWORD = "Galaxy.Pass_word~456"  # noqa: S105 - test value
 
 
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def render_app_yml(**params):
+    return yaml.safe_load(render("pulsar-app.yml.j2", **params))
 
 
 @pytest.fixture
@@ -56,10 +53,6 @@ def test_runner_and_destination_are_galaxys(entry):
     assert destination["docker_enabled"] is False
 
 
-def render_app_yml(**params):
-    return yaml.safe_load(render("pulsar-app.yml.j2", **params))
-
-
 def test_an_invalid_entry_is_refused():
     with pytest.raises(ValueError, match="'name' is required"):
         galaxy_config.galaxy_job_config("[{password: x}]", GALAXY_PASSWORD, "http://g.test")
@@ -81,7 +74,7 @@ def test_config_command_line(monkeypatch, capsys, tmp_path):
 
 def test_client_manager_gets_galaxys_amqp_parameters():
     runner = {"manager": "gpu", "amqp_url": "pyamqp://", "galaxy_url": "http://g", "load": "x"}
-    runner |= {"amqp_acknowledge": True, "transport_timeout": 5}
+    runner |= {"amqp_acknowledge": True, "transport_timeout": 5, "relay_url": None}
 
     kwargs = galaxy_job.client_manager_kwargs(runner)
 
@@ -93,6 +86,7 @@ def test_client_manager_gets_galaxys_amqp_parameters():
         "amqp_url": "pyamqp://",
         "amqp_acknowledge": True,
         "transport_timeout": 5,
+        "relay_url": None,
     }
 
 
@@ -104,6 +98,8 @@ def pulsar(tmp_path, monkeypatch):
     (tmp_path / "persisted").mkdir()
     (tmp_path / "job_metrics_conf.xml").write_text("<job_metrics><core /></job_metrics>")
     conf = render_app_yml(pulsar_job_runner="local", pulsar_config_dir=str(tmp_path))
+    # kombu's memory transport has one broker per process, whatever the URL: the tests stay
+    # apart through their own job ids (StatusUpdates ignores other jobs).
     url = f"memory://e2e-{uuid.uuid4().hex}"
     conf = {key: value for key, value in conf.items() if not key.startswith("amqp_connect_ssl")}
     conf |= {
@@ -120,16 +116,17 @@ def pulsar(tmp_path, monkeypatch):
 
 
 def config_for(pulsar, entry):
-    config = galaxy_config.galaxy_job_config(
-        entry, GALAXY_PASSWORD, f"http://127.0.0.1:{free_port()}"
-    )
+    # Port 0: the job files API takes a free port.
+    config = galaxy_config.galaxy_job_config(entry, GALAXY_PASSWORD, "http://127.0.0.1:0")
     config["runner"]["amqp_url"] = pulsar["url"]
     config["destination"]["jobs_directory"] = str(pulsar["staging"])
     return config
 
 
 def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path):
-    result = galaxy_job.run_job(config_for(pulsar, entry), timeout=60, root=tmp_path)
+    result = galaxy_job.run_job(
+        config_for(pulsar, entry), timeout=60, root=tmp_path, bind="127.0.0.1"
+    )
 
     assert (result["status"], result["returncode"]) == ("complete", 0), result
     assert galaxy_job.succeeded(result)
@@ -138,13 +135,15 @@ def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path)
     assert result["states"][-1] == "complete"
     # Pulsar fetched the input over HTTP and ran the job in its staging directory.
     assert result["inputs_served"] >= 1
-    assert result["cwd"].startswith(str(pulsar["staging"]))
-    assert result["slurm_job"] == "none"
+    assert result["report"]["cwd"].startswith(str(pulsar["staging"]))
+    assert result["report"]["slurm_job"] == "none"
     assert result["received"]["output"] == "galaxy\npulsar\nrabbitmq\n"
 
 
 def test_main_reports_a_failed_job(pulsar, entry, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(galaxy_job, "COMMAND", "exit 3; {input} {output} {report}")
+    run_job = galaxy_job.run_job
+    monkeypatch.setattr(galaxy_job, "run_job", lambda *a, **k: run_job(*a, **k, bind="127.0.0.1"))
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config_for(pulsar, entry)))
 
@@ -153,6 +152,7 @@ def test_main_reports_a_failed_job(pulsar, entry, tmp_path, monkeypatch, capsys)
     result = json.loads(capsys.readouterr().out)
     assert (result["status"], result["returncode"]) == ("complete", 3)
     assert result["received"]["report"] is None
+    assert result["report"] == {}
 
 
 def test_a_job_without_a_final_status_times_out(pulsar, entry, tmp_path):
@@ -160,7 +160,7 @@ def test_a_job_without_a_final_status_times_out(pulsar, entry, tmp_path):
     # No Pulsar consumes this manager's queues.
     config["runner"]["manager"] = "nobody"
 
-    result = galaxy_job.run_job(config, timeout=1, root=tmp_path)
+    result = galaxy_job.run_job(config, timeout=1, root=tmp_path, bind="127.0.0.1")
 
     assert result["status"] == "timeout"
     assert not galaxy_job.succeeded(result)
@@ -180,18 +180,19 @@ def test_status_updates_of_other_jobs_are_ignored():
 def job_files(tmp_path):
     (tmp_path / "job").mkdir()
     (tmp_path / "job" / "in.dat").write_text("data")
-    files = galaxy_job.JobFiles(tmp_path / "job", "key1")
-    port = free_port()
-    server = galaxy_job.serve_job_files(files, f"http://127.0.0.1:{port}")
-    yield files, port, tmp_path
+    files = galaxy_job.JobFiles(
+        tmp_path, "key1", job_dir=tmp_path / "job" / "dir", outputs=[tmp_path / "out.dat"]
+    )
+    server = galaxy_job.serve_job_files(files, ("127.0.0.1", 0))
+    yield files, server.server_port, tmp_path
     server.shutdown()
     server.server_close()
 
 
-def request(port, method, target, body=None):
+def request(port, method, target, body=None, headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     try:
-        connection.request(method, target, body=body)
+        connection.request(method, target, body=body, headers=headers or {})
         response = connection.getresponse()
         return response.status, response.headers, response.read()
     finally:
@@ -207,14 +208,14 @@ API = "/api/jobs/1/files"
         pytest.param("job_key=wrong&path={job}/in.dat", 403, id="wrong-key"),
         pytest.param("path={job}/in.dat", 403, id="no-key"),
         pytest.param("job_key=key1&path={outside}", 403, id="outside-the-job"),
-        pytest.param("job_key=key1&path={job}/../job/../secret", 403, id="dot-dot"),
+        pytest.param("job_key=key1&path={job}/../job/../../secret", 403, id="dot-dot"),
         pytest.param("job_key=key1&path={job}/missing", 404, id="missing"),
     ],
 )
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 def test_job_files_refuses(job_files, query, code, method):
     _, port, root = job_files
-    query = query.format(job=root / "job", outside=root / "secret")
+    query = query.format(job=root / "job", outside=root.parent / "secret")
 
     assert request(port, method, f"{API}?{query}")[0] == code
 
@@ -229,10 +230,65 @@ def test_job_files_serves_files_of_the_job(job_files):
     assert files.served == [str(root / "job" / "in.dat")]
 
 
+def multipart(*fields):
+    boundary = "e2e-boundary"
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="x"\r\n\r\n'
+        f"{value}\r\n"
+        for name, value in fields
+    ]
+    body = ("".join(parts) + f"--{boundary}--\r\n").encode()
+    return body, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+
+@pytest.mark.parametrize("path", ["out.dat", "job/dir/metadata/x"], ids=["output", "job-dir"])
+def test_job_files_accepts_outputs_and_job_directory_files(job_files, path):
+    files, port, root = job_files
+    body, headers = multipart(("file", "result"))
+
+    status = request(port, "POST", f"{API}?job_key=key1&path={root / path}", body, headers)[0]
+
+    assert status == 200
+    assert (root / path).read_text() == "result"
+    assert files.received == {str(root / path): "result"}
+
+
 @pytest.mark.parametrize(
-    "target", ["/other", f"{API}?job_key=wrong&path=/x"], ids=["not-the-api", "wrong-key"]
+    "target",
+    ["/other", f"{API}?job_key=wrong&path=/x", f"{API}?job_key=key1&path={{root}}/job/in.dat"],
+    ids=["not-the-api", "wrong-key", "an-input"],
 )
 def test_job_files_refuses_uploads(job_files, target):
-    _, port, _ = job_files
+    _, port, root = job_files
+    body, headers = multipart(("file", "overwritten"))
 
-    assert request(port, "POST", target, body=b"x")[0] == 403
+    assert request(port, "POST", target.format(root=root), body, headers)[0] == 403
+    assert (root / "job" / "in.dat").read_text() == "data"
+
+
+@pytest.mark.parametrize(
+    ("body", "content_type"),
+    [
+        pytest.param(b"plain", "text/plain", id="not-multipart"),
+        pytest.param(*multipart(("other", "x")), id="no-file-field"),
+        pytest.param(*multipart(("file", "a"), ("file", "b")), id="two-files"),
+    ],
+)
+def test_job_files_rejects_bad_uploads(job_files, body, content_type):
+    _, port, root = job_files
+    headers = content_type if isinstance(content_type, dict) else {"Content-Type": content_type}
+    target = f"{API}?job_key=key1&path={root / 'out.dat'}"
+
+    assert request(port, "POST", target, body, headers)[0] == 400
+    assert not (root / "out.dat").exists()
+
+
+def test_job_files_rejects_an_upload_without_length(job_files):
+    _, port, root = job_files
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.putrequest("POST", f"{API}?job_key=key1&path={root / 'out.dat'}")
+        connection.endheaders()
+        assert connection.getresponse().status == 400
+    finally:
+        connection.close()

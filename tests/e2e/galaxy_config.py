@@ -14,6 +14,7 @@ password of Galaxy's own ``galaxy`` user from the environment variable GALAXY_AM
 (never from the command line) and prints the JSON that tests/e2e/galaxy_job.py takes.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -77,12 +78,15 @@ def galaxy_job_config(entry, galaxy_password, galaxy_url):
 
 
 def main(argv=None):
-    params_yml, galaxy_url = sys.argv[1:] if argv is None else argv
-    with open(params_yml) as handle:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("params_yml", help="this component's parameters (pulsar_*)")
+    parser.add_argument("galaxy_url", help="Galaxy's galaxy_infrastructure_url")
+    args = parser.parse_args(argv)
+    with open(args.params_yml) as handle:
         params = yaml.safe_load(handle)
     # The welcome page's entry: _pulsar_amqp.galaxy_entry from group_vars/all.yml.
     entry = resolve("_pulsar_amqp", **params)["galaxy_entry"]
-    config = galaxy_job_config(entry, os.environ["GALAXY_AMQP_PASSWORD"], galaxy_url)
+    config = galaxy_job_config(entry, os.environ["GALAXY_AMQP_PASSWORD"], args.galaxy_url)
     json.dump(config, sys.stdout, indent=2)
     sys.stdout.write("\n")
 

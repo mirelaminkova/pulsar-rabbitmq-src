@@ -19,7 +19,7 @@
   connection: local
   gather_facts: false
   vars:
-    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+    tls_dir: "{{ molecule_tls_dir }}"
   tasks:
     - name: Create the certificate directory
       ansible.builtin.file:
@@ -82,10 +82,11 @@
   hosts: galaxy_workspace
   gather_facts: false
   vars:
-    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+    tls_dir: "{{ molecule_tls_dir }}"
     pulsar: "{{ hostvars['pulsar'] }}"
-    vhost: "/pulsar/{{ pulsar.pulsar_amqp_name }}"
-    node: rabbit@localhost
+    vhost: "{{ molecule_vhost }}"
+    node: "{{ molecule_rabbitmq_node }}"
+    # The Galaxy component's vars/rabbitmq_vars.yml, which its rabbitmq.conf.j2 uses.
     _galaxy_rabbitmq_local_port: 5672
     _galaxy_rabbitmq_port: "{{ pulsar.pulsar_amqp_port }}"
     _galaxy_rabbitmq_tls_dir: /etc/rabbitmq/tls
@@ -169,10 +170,13 @@
       changed_when: _guest.rc == 0
       failed_when: false
 
+    # Also on a second prepare (molecule prepare --force): what exists stays.
     - name: Create the Pulsar's vhost
       ansible.builtin.command:
         argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_vhost, "{{ vhost }}"]
-      changed_when: true
+      register: _vhost
+      changed_when: _vhost.rc == 0
+      failed_when: _vhost.rc != 0 and 'already' not in _vhost.stderr
 
     # Passwords on stdin, as the Galaxy component sets them.
     - name: Create the Pulsar's user and Galaxy's user
@@ -184,7 +188,9 @@
         - {name: galaxy, password: "{{ molecule_galaxy_amqp_password }}"}
       loop_control:
         label: "{{ item.name }}"
-      changed_when: true
+      register: _users
+      changed_when: _users.rc == 0
+      failed_when: _users.rc != 0 and 'already' not in _users.stderr
       no_log: true
 
     - name: Give both users the Pulsar's vhost
@@ -220,7 +226,7 @@
   hosts: pulsar_workspace
   gather_facts: false
   vars:
-    tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+    tls_dir: "{{ molecule_tls_dir }}"
   tasks:
     - name: Install the CA bundle tools
       ansible.builtin.apt:

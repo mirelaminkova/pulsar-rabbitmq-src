@@ -41,6 +41,13 @@ provisioner:
     # The playbook's hosts.
     variable_host: pulsar
   inventory:
+    group_vars:
+      all:
+        # Test CA, Galaxy workspace certificate and key (prepare.yml), on the controller.
+        molecule_tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+        # The Galaxy component's RabbitMQ node (_galaxy_rabbitmq_node).
+        molecule_rabbitmq_node: rabbit@localhost
+        molecule_vhost: /pulsar/molecule
     host_vars:
       # Component parameters, as SRC passes them (host vars beat group_vars/all.yml).
       pulsar:

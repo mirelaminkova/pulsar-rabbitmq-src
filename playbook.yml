@@ -20,6 +20,15 @@
           - ansible_distribution_version in ['22.04', '24.04']
         fail_msg: Choose an Ubuntu 22.04 or 24.04 SRC workspace.
 
+    # The slurm-drmaa PPA builds amd64 only.
+    - name: Check that the Slurm runner can be installed
+      ansible.builtin.assert:
+        that: ansible_architecture == 'x86_64' or not _pulsar_slurm | bool
+        fail_msg: >-
+          pulsar_job_runner slurm needs an x86_64 workspace (slurm-drmaa has no
+          {{ ansible_architecture }} packages); choose pulsar_job_runner local.
+        quiet: true
+
     - name: Check SRC nginx prerequisite
       ansible.builtin.stat:
         path: /etc/nginx/app-location-conf.d/authentication.conf

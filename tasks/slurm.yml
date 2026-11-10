@@ -11,6 +11,23 @@
     group: root
     mode: "0644"
 
+# Whoever can upload to the PPA could otherwise replace any package (libslurm,
+# munge, ...) with a higher version; with this, only slurm-drmaa comes from it.
+- name: Take only slurm-drmaa from the slurm-drmaa PPA
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/slurm-drmaa
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Package: *
+      Pin: release o={{ slurm_drmaa_origin }}
+      Pin-Priority: -1
+
+      Package: slurm-drmaa*
+      Pin: release o={{ slurm_drmaa_origin }}
+      Pin-Priority: 500
+
 - name: Add the slurm-drmaa PPA
   ansible.builtin.apt_repository:
     repo: deb [signed-by={{ slurm_drmaa_key_location }}] {{ slurm_drmaa_repo_url }} {{ ansible_distribution_release }} main

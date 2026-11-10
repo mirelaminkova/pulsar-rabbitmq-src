@@ -80,17 +80,17 @@ def load_yaml(path):
     return yaml.safe_load((REPO / path).read_text())
 
 
-def task_list(path):
-    """All tasks of a task file or play section, including those inside blocks."""
-    tasks = load_yaml(path) if isinstance(path, str) else path
-    return [t for task in tasks or [] for t in [task, *task.get("block", [])]]
+def tasks(path):
+    """All tasks of a task file (or a list of tasks), including those inside blocks."""
+    task_list = load_yaml(path) if isinstance(path, str) else path
+    return [t for task in task_list or [] for t in [task, *task.get("block", [])]]
 
 
-def the_play():
+def play():
     [play] = load_yaml("playbook.yml")
     return play
 
 
-def named(tasks, name):
-    [task] = [t for t in tasks if t.get("name") == name]
+def task_named(task_list, name):
+    [task] = [t for t in task_list if t.get("name") == name]
     return task

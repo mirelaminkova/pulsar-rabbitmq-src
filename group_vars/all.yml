@@ -68,6 +68,8 @@ pulsar_drmaa_library_path: /usr/lib/slurm-drmaa/lib/libdrmaa.so.1
 # galaxyproject.repos also adds, has it for 22.04 and 24.04.
 slurm_drmaa_repo_url: https://ppa.launchpadcontent.net/natefoo/slurm-drmaa/ubuntu
 slurm_drmaa_key_location: /usr/share/keyrings/slurm-drmaa.asc
+# Launchpad's origin of that PPA: apt takes only slurm-drmaa packages from it.
+slurm_drmaa_origin: LP-PPA-natefoo-slurm-drmaa
 
 # --- Slurm (pulsar_job_runner: slurm), with galaxyproject.slurm ------------------
 # One node: this workspace is controller and compute node, so no shared

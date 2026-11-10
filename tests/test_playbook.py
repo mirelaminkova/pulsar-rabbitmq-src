@@ -6,27 +6,17 @@ import re
 import pytest
 
 from tests.galaxy_contract import src_galaxy
-from tests.helpers import PASSWORD, REPO, load_yaml, render, resolve, resolve_text
-
-
-def tasks(path):
-    """All tasks of a task list, including those inside blocks."""
-    result = []
-    for task in load_yaml(path) or []:
-        result.append(task)
-        result.extend(task.get("block", []))
-    return result
-
-
-def play():
-    [play] = load_yaml("playbook.yml")
-    return play
-
-
-def task_named(task_list, name):
-    [task] = [t for t in task_list if t.get("name") == name]
-    return task
-
+from tests.helpers import (
+    PASSWORD,
+    REPO,
+    load_yaml,
+    play,
+    render,
+    resolve,
+    resolve_text,
+    task_named,
+    tasks,
+)
 
 # The relay is gone
 
@@ -123,7 +113,7 @@ def test_validation_comes_first_and_never_shows_values():
 
 
 def secret_tasks():
-    play_tasks = [t for task in play()["tasks"] for t in [task, *task.get("block", [])]]
+    play_tasks = tasks(play()["tasks"])
     return [
         task
         for task in play_tasks + tasks("tasks/pulsar.yml")

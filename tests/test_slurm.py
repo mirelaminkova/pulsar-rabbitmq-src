@@ -23,14 +23,14 @@ from tests.helpers import (
     PARAMS,
     REPO,
     load_yaml,
-    named,
+    play,
     render,
     render_yaml,
     resolve,
     resolve_text,
-    task_list,
+    task_named,
+    tasks,
     templar,
-    the_play,
 )
 
 DRMAA_LIBRARY = "/usr/lib/slurm-drmaa/lib/libdrmaa.so.1"
@@ -278,9 +278,9 @@ def test_slurm_conf_as_the_role_writes_it(docker, ubuntu):
 
 
 def test_slurm_is_set_up_before_pulsar_and_stopped_for_local():
-    names = [t.get("name") for t in the_play()["tasks"]]
-    slurm = named(the_play()["tasks"], "Run Pulsar's jobs through Slurm on this workspace")
-    off = named(the_play()["tasks"], "Stop Slurm when Pulsar runs jobs itself")
+    names = [t.get("name") for t in play()["tasks"]]
+    slurm = task_named(play()["tasks"], "Run Pulsar's jobs through Slurm on this workspace")
+    off = task_named(play()["tasks"], "Stop Slurm when Pulsar runs jobs itself")
     pulsar = "Install Pulsar and connect it to Galaxy's RabbitMQ"
 
     assert slurm["ansible.builtin.include_tasks"] == "tasks/slurm.yml"
@@ -290,20 +290,20 @@ def test_slurm_is_set_up_before_pulsar_and_stopped_for_local():
 
 
 def test_pulsar_restarts_for_a_new_manager_type_or_unit_environment():
-    pulsar = task_list("tasks/pulsar.yml")
-    [handler] = the_play()["handlers"]
+    pulsar = tasks("tasks/pulsar.yml")
+    [handler] = play()["handlers"]
 
     for name in (
         "Write Pulsar's app.yml with the Galaxy broker connection",  # manager type
         "Install the Pulsar systemd unit",  # DRMAA_LIBRARY_PATH
     ):
-        assert named(pulsar, name)["notify"] == handler["name"] == "Restart Pulsar"
+        assert task_named(pulsar, name)["notify"] == handler["name"] == "Restart Pulsar"
     assert handler["ansible.builtin.systemd"]["daemon_reload"] is True
     assert handler["ansible.builtin.systemd"]["state"] == "restarted"
 
 
 def test_local_runner_stops_slurm_if_installed():
-    [facts, stop] = task_list("tasks/slurm-off.yml")
+    [facts, stop] = tasks("tasks/slurm-off.yml")
 
     assert "ansible.builtin.service_facts" in facts
     assert stop["ansible.builtin.systemd"] == {
@@ -316,12 +316,12 @@ def test_local_runner_stops_slurm_if_installed():
 
 
 def test_slurm_tasks():
-    slurm = task_list("tasks/slurm.yml")
+    slurm = tasks("tasks/slurm.yml")
     names = [t["name"] for t in slurm]
-    role = named(slurm, "Install Slurm as controller and compute node")
-    packages = named(slurm, "Install the Slurm DRMAA library")
-    epilog = named(slurm, "Install the epilog that stops a job's Docker container")
-    node = named(slurm, "Wait until the Slurm node accepts jobs")
+    role = task_named(slurm, "Install Slurm as controller and compute node")
+    packages = task_named(slurm, "Install the Slurm DRMAA library")
+    epilog = task_named(slurm, "Install the epilog that stops a job's Docker container")
+    node = task_named(slurm, "Wait until the Slurm node accepts jobs")
 
     assert role["ansible.builtin.include_role"]["name"] == "galaxyproject.slurm"
     names_ = packages["ansible.builtin.apt"]["name"]
@@ -341,8 +341,8 @@ def test_slurm_tasks():
     assert node["changed_when"] is False
     assert node["until"] == "_pulsar_slurm_node.stdout | trim in _pulsar_slurm_ready_states"
     not_ready = "_pulsar_slurm_node.stdout | trim not in _pulsar_slurm_ready_states"
-    assert named(slurm, "Show why the Slurm node cannot run jobs")["when"] == not_ready
-    assert named(slurm, "Fail when the Slurm node cannot run jobs")["when"] == not_ready
+    assert task_named(slurm, "Show why the Slurm node cannot run jobs")["when"] == not_ready
+    assert task_named(slurm, "Fail when the Slurm node cannot run jobs")["when"] == not_ready
     ready = resolve("_pulsar_slurm_ready_states")
     assert not {"down", "drained", "draining", "fail", "unknown"} & set(ready)
 
@@ -350,10 +350,10 @@ def test_slurm_tasks():
 def test_munge_key_is_the_packages_own_and_checked():
     # munge generates a random key per workspace; none is shipped or logged.
     assert "slurm_munge_key" not in load_yaml("group_vars/all.yml")
-    check = named(task_list("tasks/slurm.yml"), "Check the munge key")
+    check = task_named(tasks("tasks/slurm.yml"), "Check the munge key")
     assert check["ansible.builtin.stat"]["path"] == "/etc/munge/munge.key"
     assert check["ansible.builtin.stat"]["get_checksum"] is False
-    verdict = named(task_list("tasks/slurm.yml"), "Require a private munge key")
+    verdict = task_named(tasks("tasks/slurm.yml"), "Require a private munge key")
     that = " ".join(verdict["ansible.builtin.assert"]["that"])
     assert "pw_name == 'munge'" in that
     assert "mode in ['0400', '0600']" in that
@@ -361,10 +361,10 @@ def test_munge_key_is_the_packages_own_and_checked():
 
 def test_slurm_drmaa_comes_from_the_galaxy_projects_ppa():
     # Ubuntu dropped slurm-drmaa after 16.04; galaxyproject.repos adds this PPA.
-    slurm = task_list("tasks/slurm.yml")
+    slurm = tasks("tasks/slurm.yml")
     names = [t["name"] for t in slurm]
-    key = named(slurm, "Install the slurm-drmaa PPA key")["ansible.builtin.copy"]
-    repo = named(slurm, "Add the slurm-drmaa PPA")["ansible.builtin.apt_repository"]
+    key = task_named(slurm, "Install the slurm-drmaa PPA key")["ansible.builtin.copy"]
+    repo = task_named(slurm, "Add the slurm-drmaa PPA")["ansible.builtin.apt_repository"]
 
     assert key["src"] == "files/slurm-drmaa.asc"
     assert resolve_text(key["dest"]) == "/usr/share/keyrings/slurm-drmaa.asc"
@@ -373,6 +373,40 @@ def test_slurm_drmaa_comes_from_the_galaxy_projects_ppa():
         "https://ppa.launchpadcontent.net/natefoo/slurm-drmaa/ubuntu noble main"
     )
     assert names.index("Add the slurm-drmaa PPA") < names.index("Install the Slurm DRMAA library")
+    pin = task_named(slurm, "Take only slurm-drmaa from the slurm-drmaa PPA")[
+        "ansible.builtin.copy"
+    ]
+    preferences = resolve_text(pin["content"]).split("\n\n")
+    assert preferences[0].splitlines() == [
+        "Package: *",
+        "Pin: release o=LP-PPA-natefoo-slurm-drmaa",
+        "Pin-Priority: -1",
+    ]
+    assert preferences[1].splitlines() == [
+        "Package: slurm-drmaa*",
+        "Pin: release o=LP-PPA-natefoo-slurm-drmaa",
+        "Pin-Priority: 500",
+    ]
+    assert names.index("Take only slurm-drmaa from the slurm-drmaa PPA") < names.index(
+        "Add the slurm-drmaa PPA"
+    )
+
+
+@pytest.mark.parametrize(
+    ("arch", "runner", "ok"),
+    [("x86_64", "slurm", True), ("aarch64", "slurm", False), ("aarch64", "local", True)],
+)
+def test_slurm_runner_needs_x86_64(arch, runner, ok):
+    [check] = [
+        t
+        for t in play()["pre_tasks"]
+        if t["name"] == "Check that the Slurm runner can be installed"
+    ]
+    that = check["ansible.builtin.assert"]["that"]
+
+    assert (
+        resolve_text(f"{{{{ {that} }}}}", ansible_architecture=arch, pulsar_job_runner=runner) == ok
+    )
 
 
 @pytest.mark.parametrize(
@@ -401,18 +435,20 @@ def test_ppa_keys_in_the_repository(key, fingerprint, tmp_path):
 
 
 def test_apptainer_key_is_copied_not_downloaded():
-    [key] = [t for t in task_list("tasks/apptainer.yml") if "key" in t["name"]]
+    [key] = [t for t in tasks("tasks/apptainer.yml") if "key" in t["name"]]
     assert key["ansible.builtin.copy"]["src"] == "files/apptainer.asc"
 
 
 def test_drmaa_library_is_checked():
-    check = named(task_list("tasks/slurm.yml"), "Check the Slurm DRMAA library")
+    check = task_named(tasks("tasks/slurm.yml"), "Check the Slurm DRMAA library")
     assert check["ansible.builtin.stat"]["path"] == "{{ pulsar_drmaa_library_path }}"
     assert resolve("pulsar_drmaa_library_path") == DRMAA_LIBRARY
 
 
 def test_drmaa_python_package_in_pulsars_venv():
-    pip = named(task_list("tasks/pulsar.yml"), "Install pulsar-app with AMQP support into the venv")
+    pip = task_named(
+        tasks("tasks/pulsar.yml"), "Install pulsar-app with AMQP support into the venv"
+    )
     assert "drmaa=={{ pulsar_drmaa_version }}" in pip["ansible.builtin.pip"]["name"]
 
 
@@ -423,12 +459,12 @@ def test_requirements_pin_galaxyproject_slurm():
 
 def test_live_check_can_skip_only_the_broker_and_docker_install():
     # CI's live Slurm job has no Galaxy broker and its own Docker.
-    check = named(
-        task_list("tasks/pulsar.yml"),
+    check = task_named(
+        tasks("tasks/pulsar.yml"),
         "Check that Pulsar consumes its setup queue on Galaxy's broker",
     )
-    report = named(task_list("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker")
-    [docker] = [r for r in the_play()["roles"] if r["role"] == "geerlingguy.docker"]
+    report = task_named(tasks("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker")
+    [docker] = [r for r in play()["roles"] if r["role"] == "geerlingguy.docker"]
 
     assert check["tags"] == report["tags"] == ["broker-check"]
     assert docker["tags"] == ["docker-install"]

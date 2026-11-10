@@ -12,6 +12,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+  # Weekly as well: a rotated PPA key or a changed package shows up before a deployment.
+  schedule:
+    - cron: "17 4 * * 1"
 permissions:
   contents: read
 concurrency:
@@ -42,7 +45,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Ansible
-        run: python -m pip install "ansible-core>=2.16,<2.18"
+        run: python -m pip install "$(grep '^ansible-core' requirements-dev.txt)"
       - name: Install Ansible dependencies
         run: ansible-galaxy install -r requirements.yml
       - name: Write the component parameters

@@ -1,14 +1,18 @@
 """Check that Pulsar logged in to Galaxy's RabbitMQ and consumes its setup queue.
 
-Usage (with Pulsar's venv Python): check_amqp.py APP_YML MANAGER
+Usage (with Pulsar's venv Python): check_amqp.py APP_YML
 
 Connects with the URL and TLS settings of Pulsar's app.yml through Pulsar's own
 connection code, and passively declares the queue Galaxy sends new jobs to. A
 consumer on it means Pulsar is logged in and waiting for jobs; the Galaxy broker
 has no management API that Pulsar's user could ask instead.
 
-Exit status: 0 consuming, 1 failed (fix the configuration), 2 not yet (retry).
+Exit status: 0 consuming, 1 failed (fix the configuration), 75 not yet (retry;
+EX_TEMPFAIL, unlike 2, which Python itself returns when it cannot run a script).
 Prints one line and never the password.
+
+A consumer may also be a stale connection of an earlier Pulsar with the same name
+and password (until its heartbeat expires); give each Pulsar its own name.
 """
 
 import socket
@@ -20,25 +24,31 @@ import yaml
 from amqp import exceptions as amqp_exceptions
 from pulsar.messaging import bind_amqp
 
-OK, FAILED, RETRY = 0, 1, 2
+OK, FAILED, RETRY = 0, 1, 75
 # Only the settings needed to connect: with persistence_directory and amqp_acknowledge
 # Pulsar's exchange would create acknowledgement stores, here as root.
 CONNECT_PREFIXES = ("amqp_connect_ssl_", "amqp_key_prefix")
 
 
-def pulsar_exchange(conf, manager):
+def manager_name(conf):
+    """The single manager of app.yml, the one Galaxy's runner uses."""
+    [name] = conf["managers"]
+    return name
+
+
+def pulsar_exchange(conf):
     params = {key: value for key, value in conf.items() if key.startswith(CONNECT_PREFIXES)}
-    return bind_amqp.get_exchange(conf["message_queue_url"], manager, params)
+    return bind_amqp.get_exchange(conf["message_queue_url"], manager_name(conf), params)
 
 
 def open_connection(exchange):
     return exchange.connection(exchange.url)
 
 
-def check(conf, manager):
+def check(conf):
     """Return (exit status, message)."""
     url = urlsplit(conf["message_queue_url"])
-    exchange = pulsar_exchange(conf, manager)
+    exchange = pulsar_exchange(conf)
     queue = exchange._PulsarExchange__queue_name("setup")  # the name Pulsar consumes
     where = {
         "address": f"{url.hostname}:{url.port}",
@@ -75,6 +85,8 @@ def explain(error, where):
             f"TLS with {where['address']} failed ({error.reason}): "
             "is pulsar_amqp_port Galaxy's AMQPS port?",
         )
+    if isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN:
+        return RETRY, f"Resolving {where['host']} failed temporarily ({error.strerror})."
     if isinstance(error, socket.gaierror):
         return FAILED, f"Cannot resolve {where['host']}: check pulsar_galaxy_fqdn."
     if isinstance(error, amqp_exceptions.AccessRefused):
@@ -106,10 +118,10 @@ def explain(error, where):
 
 
 def main(argv):
-    app_yml, manager = argv
+    [app_yml] = argv
     with open(app_yml) as stream:
         conf = yaml.safe_load(stream)
-    code, message = check(conf, manager)
+    code, message = check(conf)
     print(message)
     return code
 

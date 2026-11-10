@@ -1,5 +1,5 @@
 ---
-# Apptainer for the co-located Pulsar, installed from the same PPA as the SRC
+# Apptainer for Pulsar's jobs, installed from the same PPA as the SRC
 # Galaxy component. The package is unprivileged (no setuid starter) and ships a
 # `singularity` command, which is what Galaxy's singularity_enabled destinations run.
 - name: Download Apptainer PPA key
@@ -21,9 +21,9 @@
     state: present
 
 # Galaxy resolves the container image and builds the `singularity exec` command;
-# the SRC Galaxy component cannot pass singularity_volumes with commas through its
-# one-line Pulsar parameters. Binding /cvmfs system-wide gives every container the
-# reference data and images Galaxy's command line refers to.
+# its src_galaxy_pulsar_amqp_configs entries have no singularity_volumes key.
+# Binding /cvmfs system-wide gives every container the reference data that
+# Galaxy's tool data tables refer to.
 - name: Bind /cvmfs into every Apptainer container
   ansible.builtin.lineinfile:
     path: /etc/apptainer/apptainer.conf

@@ -16,3 +16,7 @@ pulsar_manager: _default_
 pulsar_staging_dir: /mnt/pulsar/files/staging
 # Mount the Galaxy CVMFS repositories (reference data and Singularity images). "false" leaves CVMFS out.
 pulsar_cvmfs: "true"
+# "false" leaves Apptainer out; the Galaxy entry then has no singularity_enabled.
+pulsar_apptainer: "true"
+# "true" installs Docker and adds the pulsar user to the docker group (root-equivalent).
+pulsar_docker: "false"

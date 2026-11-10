@@ -20,6 +20,13 @@ pulsar_staging_dir: /mnt/pulsar/files/staging
 # Mount the Galaxy project's CVMFS repositories (reference data and Singularity
 # images under /cvmfs), as the Galaxy component does with src_galaxy_cvmfs.
 pulsar_cvmfs: true
+# Install Apptainer (with its `singularity` command), unprivileged (no setuid
+# starter); the welcome page's Galaxy entry then sets singularity_enabled.
+pulsar_apptainer: true
+# Install Docker for docker_enabled Galaxy environments (the entry sets it only
+# without Apptainer). Off by default: the pulsar user joins the docker group,
+# which is equivalent to root on this workspace.
+pulsar_docker: false
 
 # --- Derived settings; use these, never the parameters directly ---------------
 _pulsar_amqp: >-
@@ -42,14 +49,8 @@ pulsar_version: "0.15.15"
 # Ubuntu's CA bundle: Galaxy's certificate (SRC-Nginx, Let's Encrypt or ZeroSSL)
 # is verified against it, together with the hostname pulsar_galaxy_fqdn.
 pulsar_amqp_ca_certs: /etc/ssl/certs/ca-certificates.crt
-# Jobs run on this workspace (no cluster). Galaxy's entry uses the same manager name.
+# Jobs run on this workspace (no cluster), with the manager pulsar_manager.
 pulsar_num_concurrent_jobs: "{{ [ansible_processor_vcpus | default(1) | int - 1, 1] | max }}"
-# Let Pulsar run tools in Docker containers; the welcome page's Galaxy entry then
-# sets docker_enabled. Membership of the docker group is equivalent to root.
-pulsar_docker: true
-# Install Apptainer (with its `singularity` command), unprivileged (no setuid
-# starter), so the Galaxy entry can set singularity_enabled.
-pulsar_apptainer: true
 
 # galaxyproject.cvmfs client settings, identical to the SRC Galaxy component.
 cvmfs_role: client

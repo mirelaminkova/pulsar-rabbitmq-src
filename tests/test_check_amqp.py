@@ -2,7 +2,7 @@
 
 Real TLS handshakes against a local server prove that the certificate and the
 hostname are verified through Pulsar's own connection code; the broker's answers
-are simulated, since issue #4 adds the end-to-end test with Galaxy's RabbitMQ.
+are simulated; this repository's issue #4 adds the end-to-end test with Galaxy's RabbitMQ.
 """
 
 import datetime
@@ -53,7 +53,7 @@ def run_check(channel=None, connect_error=None, conf=None):
         connection.connect.side_effect = connect_error
     connection.channel.return_value = channel or FakeChannel(result=1)
     with mock.patch.object(check_amqp, "open_connection", return_value=connection):
-        return check_amqp.check(conf or app_yml(), "_default_")
+        return check_amqp.check(conf or app_yml())
 
 
 class CheckResultTest(unittest.TestCase):
@@ -70,6 +70,16 @@ class CheckResultTest(unittest.TestCase):
 
         self.assertResult(result, check_amqp.OK, "pulsar__setup", "/pulsar/hpc")
         self.assertEqual(channel.declared, [("pulsar__setup", True)])
+
+    def test_manager_comes_from_app_yml(self):
+        channel = FakeChannel(result=1)
+        conf = yaml.safe_load(render("pulsar-app.yml.j2", pulsar_manager="gpu"))
+
+        self.assertResult(run_check(channel, conf=conf), check_amqp.OK, "pulsar_gpu__setup")
+
+    def test_retry_status_is_not_pythons_own(self):
+        # Python exits 2 when it cannot run the script; that must not be retried.
+        self.assertNotIn(check_amqp.RETRY, (0, 1, 2))
 
     def test_queue_without_consumer_is_retried(self):
         self.assertResult(run_check(FakeChannel(result=0)), check_amqp.RETRY, "pulsar__setup")
@@ -107,6 +117,10 @@ class CheckResultTest(unittest.TestCase):
             "pulsar_galaxy_fqdn",
         )
 
+    def test_temporary_dns_failure_is_retried(self):
+        error = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        self.assertResult(run_check(connect_error=error), check_amqp.RETRY, "galaxy.example.org")
+
     def test_unreachable_broker_is_retried(self):
         self.assertResult(
             run_check(connect_error=ConnectionRefusedError(111, "refused")),
@@ -131,7 +145,7 @@ class CheckResultTest(unittest.TestCase):
             persistence = Path(tmp) / "persisted_data"
             conf = app_yml(persistence_directory=str(persistence))
 
-            exchange = check_amqp.pulsar_exchange(conf, "_default_")
+            exchange = check_amqp.pulsar_exchange(conf)
 
             self.assertFalse(persistence.exists())
             self.assertEqual(exchange.url, conf["message_queue_url"])
@@ -146,7 +160,7 @@ class CheckResultTest(unittest.TestCase):
                 ) as check,
                 mock.patch("builtins.print") as printed,
             ):
-                self.assertEqual(check_amqp.main([str(path), "_default_"]), check_amqp.RETRY)
+                self.assertEqual(check_amqp.main([str(path)]), check_amqp.RETRY)
         check.assert_called_once()
         printed.assert_called_once_with("later")
 
@@ -234,7 +248,7 @@ class TlsVerificationTest(unittest.TestCase):
         conf = app_yml(
             message_queue_url=url, amqp_connect_ssl_ca_certs=ca_certs or str(self.dir / "ca.pem")
         )
-        return check_amqp.check(conf, "_default_")
+        return check_amqp.check(conf)
 
     def test_matching_certificate_passes_tls(self):
         code, message = self.check("galaxy.example.org")

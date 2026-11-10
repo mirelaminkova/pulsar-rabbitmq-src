@@ -104,7 +104,7 @@ Pulsar ──────────── HTTPS for input/output files ──�
         <ul>
           <li>Copy the <strong>entire line</strong> including all brackets <code>[ ]</code>. Do NOT add extra quotes.</li>
           <li>Galaxy's <code>src_galaxy_rabbitmq_port</code> must be <code>{{ a.port | e }}</code>, and the Galaxy workspace's security group must allow this workspace on that port.</li>
-          <li>Users send jobs here by choosing <code>{{ a.tag | e }}</code> under <em>Use distributed compute resources</em> in their Galaxy preferences.</li>
+          <li>Users send jobs here by choosing <code>{{ a.name | e }}</code> (the entry's <code>label</code>, if you add one) under <em>Use distributed compute resources</em> in their Galaxy preferences.</li>
           <li>Keep the Galaxy parameter <em>API exposed</em> enabled: Pulsar transfers files through Galaxy's <code>/api/</code>.</li>
         </ul>
       </div>
@@ -112,13 +112,13 @@ Pulsar ──────────── HTTPS for input/output files ──�
 
     <section>
       <h2>Pulsar on this workspace</h2>
-      <p>Pulsar {{ pulsar_version | e }} consumes jobs from queue <code>{{ a.setup_queue | e }}</code> in vhost <code>{{ a.vhost | e }}</code>. The deployment checked that it is logged in and consuming.</p>
+      <p>Pulsar {{ pulsar_version | e }} consumes jobs from queue <code>{{ a.setup_queue | e }}</code> in vhost <code>{{ a.vhost | e }}</code>. The deployment checks after this page is written that Pulsar is logged in and consuming; if it failed, see its message in the deployment log or run the connection check below.</p>
       <ul>
         <li><strong>Configuration:</strong> <code>{{ pulsar_config_dir | e }}/app.yml</code></li>
         <li><strong>Status:</strong> <code>systemctl status pulsar</code> and <code>journalctl -u pulsar -f</code></li>
-        <li><strong>Connection check:</strong> <code>sudo {{ pulsar_venv | e }}/bin/python {{ pulsar_check_script | e }} {{ pulsar_config_dir | e }}/app.yml {{ a.manager | e }}</code></li>
+        <li><strong>Connection check:</strong> <code>sudo {{ pulsar_venv | e }}/bin/python {{ pulsar_check_script | e }} {{ pulsar_config_dir | e }}/app.yml</code></li>
 {% if _pulsar_cvmfs | bool %}
-        <li><strong>CVMFS:</strong> the Galaxy project repositories are mounted under <code>/cvmfs</code>{% if a.singularity_enabled %} and bound into every Apptainer container{% endif %}, so Galaxy's tool data tables and CVMFS image paths work in jobs here</li>
+        <li><strong>CVMFS:</strong> the Galaxy project repositories are mounted under <code>/cvmfs</code>{% if a.singularity_enabled %} and bound into every Apptainer container{% endif %}, so Galaxy's tool data tables work in jobs here. Container images are not taken from CVMFS: Galaxy's resolvers point Apptainer at <code>quay.io</code>, which pulls each image on first use (outbound HTTPS needed)</li>
 {% endif %}
       </ul>
     </section>

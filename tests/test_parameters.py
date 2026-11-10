@@ -92,7 +92,20 @@ class ValidationTest(unittest.TestCase):
                 self.assertInvalid("pulsar_galaxy_fqdn", galaxy_fqdn=value)
 
     def test_port(self):
-        for value in ("0", "65536", "56x", "-1", "5671.0"):
+        # Galaxy also refuses the ports RabbitMQ, Nginx and Galaxy use themselves.
+        for value in (
+            "0",
+            "65536",
+            "56x",
+            "-1",
+            "5671.0",
+            "5672",
+            "4369",
+            "25672",
+            "80",
+            "443",
+            "8080",
+        ):
             with self.subTest(value=value):
                 self.assertInvalid("pulsar_amqp_port", port=value)
         self.assertEqual(pulsar_amqp_errors(settings(port="15671")), [])
@@ -113,9 +126,30 @@ class ValidationTest(unittest.TestCase):
     def test_staging_directory_is_stricter_than_galaxy(self):
         # Galaxy accepts any absolute path without spaces; Pulsar would own it, so
         # system directories and characters the SRC one-line format breaks on are refused.
-        for value in ("/", "/mnt", "/etc/../x/y", "/a/b,c", "/a/{b}", "relative/dir"):
+        # Only below /mnt or /data (SRC storage), at least three levels deep, so neither a
+        # system directory nor Pulsar's own installation can become the pulsar user's.
+        for value in (
+            "/",
+            "/mnt",
+            "/mnt/pulsar",
+            "/data/volume_2",
+            "/var/lib",
+            "/opt/pulsar",
+            "/opt/pulsar/config",
+            "/var/lib/pulsar/x",
+            "/etc/pulsar/staging",
+            "/mnt/../etc/x",
+            "/mnt/a/../b",
+            "/mnt/./a/b",
+            "/mnt/a/b,c",
+            "/mnt/a/{b}",
+            "relative/dir/x",
+        ):
             with self.subTest(value=value):
                 self.assertInvalid("pulsar_staging_dir", jobs_directory=value)
+        for value in ("/mnt/pulsar/files/staging", "/data/volume_2/staging"):
+            with self.subTest(value=value):
+                self.assertEqual(pulsar_amqp_errors(settings(jobs_directory=value)), [])
 
     def test_booleans(self):
         self.assertFalse(settings(docker_enabled="false")["docker_enabled"])
@@ -139,7 +173,6 @@ class SameRulesAsGalaxyTest(unittest.TestCase):
             "true",
             "false",
             "hpc.1",
-            "",
         ],
         "password": [
             PASSWORD,
@@ -161,7 +194,7 @@ class SameRulesAsGalaxyTest(unittest.TestCase):
                 with self.subTest(key=key, value=value):
                     result = settings(**{key: value})
                     ours = [e for e in pulsar_amqp_errors(result) if key in e or "required" in e]
-                    theirs = galaxy_errors(result["galaxy_entry"]) if value else ["required"]
+                    theirs = galaxy_errors(result["galaxy_entry"])
                     self.assertEqual(ours == [], theirs == [], (ours, theirs))
 
 

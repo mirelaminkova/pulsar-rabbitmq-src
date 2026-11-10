@@ -2,8 +2,11 @@
 - name: Install Pulsar for the Galaxy component's RabbitMQ on SURF Research Cloud
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   become: true
+  # Restart Pulsar for a changed app.yml or venv even when a later task fails; a rerun
+  # would not see the change again and would leave the old Pulsar running.
+  force_handlers: true
   pre_tasks:
-    # Same rules as the Galaxy component's parser (filter_plugins/pulsar_amqp.py).
+    # The rules of the Galaxy component's parser, in filter_plugins/pulsar_amqp.py.
     - name: Validate the component parameters
       ansible.builtin.assert:
         that: _pulsar_amqp_errors | length == 0
@@ -32,7 +35,7 @@
   roles:
     # Docker Engine for docker_enabled Galaxy environments.
     - role: geerlingguy.docker
-      when: pulsar_docker | bool
+      when: _pulsar_amqp.docker_enabled
     # Galaxy's CVMFS repositories (reference data and Singularity images under
     # /cvmfs), with the same role and settings as the SRC Galaxy component.
     - role: galaxyproject.cvmfs

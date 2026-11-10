@@ -42,7 +42,7 @@ class RemovedRelayTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse((REPO / path).exists())
 
-    def test_no_relay_or_broker_on_this_workspace(self):
+    def test_no_broker_on_this_workspace(self):
         files = [
             REPO / "playbook.yml",
             REPO / "parameters.yml",
@@ -55,7 +55,7 @@ class RemovedRelayTest(unittest.TestCase):
                 text = path.read_text().lower()
                 found = [
                     w
-                    for w in ("relay", "valkey", "rabbitmq-server", "sram_admin", "admin-sync")
+                    for w in ("valkey", "rabbitmq-server", "docker_compose", "admin-sync")
                     if w in text
                 ]
                 self.assertEqual(found, [])
@@ -73,6 +73,8 @@ class ParametersTest(unittest.TestCase):
             "pulsar_manager",
             "pulsar_staging_dir",
             "pulsar_cvmfs",
+            "pulsar_docker",
+            "pulsar_apptainer",
         ):
             self.assertIn(name, parameters)
         self.assertEqual(parameters["pulsar_amqp_password"], "")
@@ -81,8 +83,25 @@ class ParametersTest(unittest.TestCase):
         group_vars = load_yaml("group_vars/all.yml")
         self.assertLessEqual(set(load_yaml("parameters.yml")), set(group_vars))
 
+    def test_parameter_defaults_agree_with_group_vars(self):
+        # SRC passes parameters.yml's strings; without SRC, group_vars apply. Same result.
+        group_vars = load_yaml("group_vars/all.yml")
+        parameters = {
+            key: value
+            for key, value in load_yaml("parameters.yml").items()
+            if key not in ("pulsar_galaxy_fqdn", "pulsar_amqp_name", "pulsar_amqp_password")
+        }
+        defaults = {key: group_vars[key] for key in parameters}
+        for name in ("_pulsar_amqp", "_pulsar_cvmfs"):
+            with self.subTest(name=name):
+                self.assertEqual(resolve(name, **parameters), resolve(name, **defaults))
+
 
 class PlaybookTest(unittest.TestCase):
+    def test_restart_survives_a_later_failure(self):
+        # A failing task after a changed app.yml must still restart Pulsar.
+        self.assertIs(play().get("force_handlers"), True)
+
     def test_validation_comes_first_and_never_shows_values(self):
         pre_tasks = play()["pre_tasks"]
         check = pre_tasks[0]["ansible.builtin.assert"]
@@ -137,8 +156,8 @@ class PlaybookTest(unittest.TestCase):
         self.assertEqual(names.index(report["name"]), names.index(check["name"]) + 1)
         argv = check["ansible.builtin.command"]["argv"]
         self.assertEqual(argv[0], "{{ pulsar_venv }}/bin/python")
-        self.assertNotIn("password", " ".join(argv))
-        self.assertEqual(check["until"], "_pulsar_amqp_check.rc != 2")
+        self.assertEqual(argv[1:], ["{{ pulsar_check_script }}", "{{ pulsar_config_dir }}/app.yml"])
+        self.assertEqual(check["until"], "_pulsar_amqp_check.rc != 75")  # check_amqp.RETRY
         self.assertIn("_pulsar_amqp_check.stdout", report["ansible.builtin.fail"]["msg"])
         self.assertEqual(report["when"], "_pulsar_amqp_check.rc != 0")
 
@@ -152,6 +171,12 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("src_galaxy_pulsar_amqp_configs", page)
         self.assertIn("environment: amqp_hpc", page)
         self.assertIn("src_galaxy_rabbitmq", page)
+        # Galaxy's preferences list the entry by its label, which defaults to the name.
+        self.assertIn("choosing <code>hpc</code>", page)
+
+    def test_welcome_page_does_not_claim_a_check_that_may_have_failed(self):
+        # The page is published before the broker check, so it must not report its result.
+        self.assertNotIn("checked that", render("welcome.html.j2"))
 
     def test_welcome_page_escapes_values(self):
         page = render("welcome.html.j2", ansible_hostname="<b>x</b>")

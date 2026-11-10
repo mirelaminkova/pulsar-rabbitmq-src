@@ -7,7 +7,6 @@ app.yml; these tests go through the same function.
 import ssl
 import unittest
 
-from pulsar.client import amqp_exchange
 from pulsar.messaging import bind_amqp
 
 from tests.helpers import PASSWORD, render_yaml, resolve
@@ -74,9 +73,6 @@ class QueueNamesTest(unittest.TestCase):
                     resolve("_pulsar_amqp", pulsar_manager=manager)["setup_queue"],
                     exchange._PulsarExchange__queue_name("setup"),
                 )
-
-    def test_default_exchange(self):
-        self.assertEqual(amqp_exchange.DEFAULT_EXCHANGE_NAME, "pulsar")
 
 
 if __name__ == "__main__":

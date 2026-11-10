@@ -6,7 +6,7 @@ The Galaxy side (mirelaminkova/src-component-galaxy-amqp) is the contract: for e
 ``src_galaxy_pulsar_amqp_configs`` entry ``<name>`` it creates RabbitMQ user ``<name>``,
 vhost ``/pulsar/<name>`` and environment ``amqp_<name>``. The rules below are those of
 its parser (``filter_plugins/src_galaxy.py``); tests/test_parameters.py checks that both
-accept the same values.
+accept the same values, apart from the stricter hostname and staging directory rules.
 """
 
 import re
@@ -24,11 +24,14 @@ _PASSWORD = re.compile(r"[A-Za-z0-9._~-]{12,}")
 _RESERVED_NAMES = ("galaxy", "guest")
 # Galaxy's one-line parser turns these bare values into booleans, which it then rejects.
 _BOOLEAN_WORDS = ("true", "false")
-# Stricter than Galaxy's `/\S*`: Pulsar owns this directory, and the value must survive
-# the one-line SRC format (no `,` `[` `]` `{` `}` or quotes).
-_JOBS_DIRECTORY = re.compile(r"(/[A-Za-z0-9_.-]+){2,}")
+# Stricter than Galaxy's `/\S*`: the pulsar user owns this directory, so only below
+# /mnt or /data (SRC storage) and at least three levels deep, never a system directory
+# or Pulsar's installation; and the value must survive the one-line SRC format.
+_JOBS_DIRECTORY = re.compile(r"/(?:mnt|data)(?:/[A-Za-z0-9_.-]+){2,}")
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _FQDN = re.compile(rf"(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+")
+# Galaxy's _galaxy_rabbitmq_reserved_ports: RabbitMQ's own, Nginx's and Galaxy's ports.
+_RESERVED_PORTS = (5672, 4369, 25672, 80, 443, 8080)
 _BOOLEANS = {True: True, False: False, "true": True, "false": False}
 
 
@@ -83,9 +86,8 @@ def pulsar_amqp_settings(params):
 def _galaxy_entry(settings):
     """The ``src_galaxy_pulsar_amqp_configs`` value for this Pulsar, in SRC's one-line format."""
     values = {key: settings[key] for key in ("name", "password", "manager", "jobs_directory")}
-    # One container type: with both, Galaxy would prefer Docker, while Apptainer uses the
-    # CVMFS images and the system-wide /cvmfs bind. Docker stays usable by hand-edited
-    # Galaxy configurations.
+    # One container type: with both, Galaxy would prefer Docker, while Apptainer runs
+    # unprivileged and sees /cvmfs through the system-wide bind.
     if settings["singularity_enabled"] is True:
         values["singularity_enabled"] = "true"
     elif settings["docker_enabled"] is True:
@@ -106,9 +108,10 @@ def pulsar_amqp_errors(settings):
         )
 
     port = settings["port"]
-    if not (isinstance(port, int) and 1 <= port <= 65535):
+    if not (isinstance(port, int) and 1 <= port <= 65535) or port in _RESERVED_PORTS:
         errors.append(
-            "pulsar_amqp_port must be an integer from 1 to 65535 (src_galaxy_rabbitmq_port), "
+            "pulsar_amqp_port must be src_galaxy_rabbitmq_port: an integer from 1 to 65535, "
+            f"not {', '.join(map(str, _RESERVED_PORTS))}, "
             f"got '{port}'"
         )
 
@@ -148,8 +151,9 @@ def pulsar_amqp_errors(settings):
         or "/./" in jobs_directory + "/"
     ):
         errors.append(
-            "pulsar_staging_dir must be an absolute path of at least two levels of "
-            f"A-Z a-z 0-9 _ . - without . or .. (Galaxy's jobs_directory), got '{jobs_directory}'"
+            "pulsar_staging_dir (Galaxy's jobs_directory) must be a path below /mnt or /data, "
+            "at least three levels deep, of A-Z a-z 0-9 _ . - without . or .., "
+            f"got '{jobs_directory}'"
         )
 
     for key, parameter in (

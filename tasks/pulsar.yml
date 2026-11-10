@@ -14,7 +14,7 @@
     home: "{{ pulsar_home }}"
     create_home: false
     shell: /usr/sbin/nologin
-    groups: "{{ ['docker'] if pulsar_docker | bool else omit }}"
+    groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
     append: true
 
 - name: Create Pulsar directories
@@ -90,7 +90,7 @@
 
 - name: Install Apptainer for Singularity-enabled Galaxy environments
   ansible.builtin.include_tasks: tasks/apptainer.yml
-  when: pulsar_apptainer | bool
+  when: _pulsar_amqp.singularity_enabled
 
 # autofs mounts a repository on first access; this proves the client works
 # (keys, stratum 1 reachable) before Galaxy's first job depends on it.
@@ -124,17 +124,16 @@
   ansible.builtin.meta: flush_handlers
 
 # Pulsar declares and consumes its setup queue when it has logged in; a consumer
-# on it proves the login, the vhost and the TLS settings. Exit status 2 means
-# "not yet" and is retried; 1 is a configuration error and stops at once.
+# on it proves the login, the vhost and the TLS settings. Exit status 75 means
+# "not yet" and is retried (about two minutes); any other failure stops at once.
 - name: Check that Pulsar consumes its setup queue on Galaxy's broker
   ansible.builtin.command:
     argv:
       - "{{ pulsar_venv }}/bin/python"
       - "{{ pulsar_check_script }}"
       - "{{ pulsar_config_dir }}/app.yml"
-      - "{{ _pulsar_amqp.manager }}"
   register: _pulsar_amqp_check
-  until: _pulsar_amqp_check.rc != 2
+  until: _pulsar_amqp_check.rc != 75
   retries: 24
   delay: 5
   changed_when: false

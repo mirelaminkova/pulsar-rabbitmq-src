@@ -425,8 +425,15 @@ def test_task_prolog_fails_the_task_without_its_temporary_directory(tmp_path):
 
 @pytest.mark.parametrize(
     ("step", "removed"),
-    [("batch", True), ("4294967294", True), ("0", False), ("1", False), (None, False)],
-    ids=["batch", "batch-numeric", "srun-step-0", "srun-step-1", "no-step"],
+    [
+        (None, True),
+        ("", True),
+        ("batch", True),
+        ("4294967294", True),
+        ("0", False),
+        ("1", False),
+    ],
+    ids=["batch-unset", "batch-empty", "batch", "batch-numeric", "srun-step-0", "srun-step-1"],
 )
 def test_task_epilog_removes_the_temporary_directory_when_the_job_script_ends(
     tmp_path, step, removed

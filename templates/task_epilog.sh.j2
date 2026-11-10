@@ -5,7 +5,8 @@
 case "$SLURM_JOB_ID" in
   ''|*[!0-9]*) exit 0 ;;
 esac
-case "$SLURM_STEP_ID" in
+# The batch step has no SLURM_STEP_ID (or "batch", 4294967294); srun steps a number.
+case "${SLURM_STEP_ID:-batch}" in
   batch|4294967294) rm -rf -- "{{ pulsar_job_tmp_dir }}/$SLURM_JOB_ID" ;;
 esac
 exit 0

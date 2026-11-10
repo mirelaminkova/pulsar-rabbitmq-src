@@ -120,6 +120,7 @@ jobs:
             [ -z "$(sudo ls -A /data/ci/pulsar/job_tmp)" ] && break
             sleep 1
           done
+          sudo ls -la /data/ci/pulsar/job_tmp
           [ -z "$(sudo ls -A /data/ci/pulsar/job_tmp)" ]
           systemctl show slurmd --property=ExecStartPre --value | grep -q check_storage.py
       - name: Run an Apptainer container in a Slurm job

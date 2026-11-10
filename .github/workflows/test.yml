@@ -47,7 +47,7 @@ jobs:
       # --no-cov: one test module cannot reach the coverage gate, which checks.yml enforces.
       # The comparison must run here, never skip: fail on any SKIPPED.
       - name: Compare the vendored contract files with the Galaxy component
-        shell: bash  # -eo pipefail
+        shell: bash  # explicit bash runs with -eo pipefail: tee cannot hide a failure
         env:
           GALAXY_AMQP_REPO: .galaxy-amqp
         run: |

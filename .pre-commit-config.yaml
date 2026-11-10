@@ -5,14 +5,14 @@
 # Versions of the local Python hooks match requirements-dev.txt; keep them in sync.
 default_install_hook_types: [pre-commit, pre-push]
 default_stages: [pre-commit]
-# pulsar-app 0.15.15 (Cheetah's cgi) and ansible-core 2.18 (crypt) need Python <= 3.12, as in CI.
+# pulsar-app 0.15.15 needs Python <= 3.12 (Cheetah imports cgi, removed in 3.13), as in CI.
 default_language_version:
   python: python3.12
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
-    # tests/galaxy_contract/ is vendored from the Galaxy component and kept byte-for-byte:
+    # tests/galaxy_contract/ holds files vendored byte-for-byte from the Galaxy component:
     # excluded from the fixers and linters, but its changes still run pytest.
     hooks:
       - id: trailing-whitespace

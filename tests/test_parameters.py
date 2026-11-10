@@ -287,6 +287,7 @@ def test_galaxy_derives_the_same_connection():
         ("false", "true", {"singularity_enabled"}),
         ("false", "false", set()),
     ],
+    ids=["both-apptainer-wins", "docker", "apptainer", "none"],
 )
 def test_one_container_type(docker, singularity, expected):
     entry = parsed(settings(docker_enabled=docker, singularity_enabled=singularity))

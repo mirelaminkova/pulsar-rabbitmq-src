@@ -37,13 +37,16 @@ def galaxy_app_yml(settings):
 
 
 PARAMS = [
-    {},
-    {
-        "pulsar_manager": "gpu",
-        "pulsar_staging_dir": "/data/volume_2/staging",
-        "pulsar_amqp_port": "15671",
-        "pulsar_amqp_name": "eu_hpc-2",
-    },
+    pytest.param({}, id="defaults"),
+    pytest.param(
+        {
+            "pulsar_manager": "gpu",
+            "pulsar_staging_dir": "/data/volume_2/staging",
+            "pulsar_amqp_port": "15671",
+            "pulsar_amqp_name": "eu_hpc-2",
+        },
+        id="gpu-custom-port-and-name",
+    ),
 ]
 
 

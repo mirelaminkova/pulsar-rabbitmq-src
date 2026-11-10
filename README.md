@@ -67,7 +67,7 @@ To change it, change the entry's `password` on Galaxy, rerun the Galaxy componen
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 . .venv/bin/activate
-pytest                                  # 100% branch coverage of files/ and filter_plugins/
+pytest                                  # 100% branch coverage
 ansible-galaxy install -r requirements.yml
 ansible-playbook -i localhost, playbook.yml --syntax-check
 ```

@@ -30,7 +30,7 @@
 
 - name: Add the slurm-drmaa PPA
   ansible.builtin.apt_repository:
-    repo: deb [signed-by={{ slurm_drmaa_key_location }}] {{ slurm_drmaa_repo_url }} {{ ansible_distribution_release }} main
+    repo: deb [signed-by={{ slurm_drmaa_key_location }}] {{ slurm_drmaa_repo_url }} {{ ansible_facts['distribution_release'] }} main
     state: present
     filename: slurm-drmaa
     update_cache: true

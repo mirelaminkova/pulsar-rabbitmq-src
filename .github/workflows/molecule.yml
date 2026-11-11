@@ -25,11 +25,14 @@ defaults:
     shell: bash
 jobs:
   molecule:
-    name: molecule (${{ matrix.distro }})
+    name: molecule (${{ matrix.distro }}, ${{ matrix.ansible }})
     strategy:
       fail-fast: false
       matrix:
         distro: [ubuntu_noble, ubuntu_jammy]
+        # SRC's external Ansible plugin runs the playbook with remote_ansible_version 14.6.0
+        # (ansible-core 2.21); requirements-dev.txt's ansible-core is what contributors run.
+        ansible: ["ansible==14.6.0", "ansible-core~=2.18.20"]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -37,6 +40,11 @@ jobs:
       # The Pulsar workspace's image (molecule.yml).
       MOLECULE_DISTRO: ${{ matrix.distro }}
       MOLECULE_STORAGE: /mnt/molecule-volume
+      # Molecule and the playbook's Ansible: a pip requirement, through the environment.
+      ANSIBLE: ${{ matrix.ansible }}
+      # verify.yml renders Galaxy's job configuration with tests/helpers.py, which needs
+      # requirements-dev.txt's ansible-core (2.18): the virtualenv requirements-dev.txt describes.
+      MOLECULE_TESTS_PYTHON: ${{ github.workspace }}/.venv/bin/python
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -48,9 +56,14 @@ jobs:
           cache-dependency-path: |
             requirements-dev.txt
             molecule/requirements.txt
-      # requirements-dev.txt: verify.yml renders Galaxy's job configuration (tests/e2e/).
-      - name: Install Molecule and the test tooling
-        run: python -m pip install -r requirements-dev.txt -r molecule/requirements.txt
+      - name: Install Molecule and Ansible
+        run: |
+          python -m pip install -r molecule/requirements.txt "$ANSIBLE"
+          ansible --version
+      - name: Install the test tooling
+        run: |
+          python -m venv .venv
+          "$MOLECULE_TESTS_PYTHON" -m pip install -r requirements-dev.txt
       - name: Install Ansible dependencies
         run: |
           ansible-galaxy install -r requirements.yml

@@ -9,6 +9,7 @@ from tests.galaxy_contract import src_galaxy
 from tests.helpers import (
     PASSWORD,
     REPO,
+    facts,
     load_yaml,
     play,
     render,
@@ -246,7 +247,7 @@ def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
 
 
 def test_welcome_page_escapes_values():
-    page = render("welcome.html.j2", ansible_hostname="<b>x</b>")
+    page = render("welcome.html.j2", **facts(hostname="<b>x</b>"))
     assert "<b>x</b>" not in page
 
 

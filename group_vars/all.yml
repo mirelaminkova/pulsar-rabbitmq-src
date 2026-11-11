@@ -110,7 +110,7 @@ pulsar_version: "0.15.15"
 # is verified against it, together with the hostname pulsar_galaxy_fqdn.
 pulsar_amqp_ca_certs: /etc/ssl/certs/ca-certificates.crt
 # With pulsar_job_runner local: Pulsar runs this many jobs at once itself.
-pulsar_num_concurrent_jobs: "{{ [ansible_processor_vcpus | default(1) | int - 1, 1] | max }}"
+pulsar_num_concurrent_jobs: "{{ [ansible_facts['processor_vcpus'] | default(1) | int - 1, 1] | max }}"
 # Python DRMAA binding in Pulsar's venv (installed for both runners) and the
 # libdrmaa of slurm-drmaa1 it loads, through the unit's environment.
 pulsar_drmaa_version: "0.7.9"
@@ -130,11 +130,11 @@ slurm_roles: [controller, exec]
 # Memory Slurm does not hand out to jobs, for the OS, Pulsar and its broker
 # connection. Slurm schedules by it but does not enforce it (no cgroups).
 # At least 1 GiB or a tenth, but never more than half of the workspace's memory.
-pulsar_slurm_reserved_memory_mb: "{{ [1024, (ansible_memtotal_mb | int) // 10] | max }}"
+pulsar_slurm_reserved_memory_mb: "{{ [1024, (ansible_facts['memtotal_mb'] | int) // 10] | max }}"
 _pulsar_slurm_memory_mb: >-
-  {{ [(ansible_memtotal_mb | int) - (pulsar_slurm_reserved_memory_mb | int),
-      (ansible_memtotal_mb | int) - (ansible_memtotal_mb | int) // 2] | max }}
-_pulsar_slurm_cpus: "{{ ansible_processor_vcpus | default(1) | int }}"
+  {{ [(ansible_facts['memtotal_mb'] | int) - (pulsar_slurm_reserved_memory_mb | int),
+      (ansible_facts['memtotal_mb'] | int) - (ansible_facts['memtotal_mb'] | int) // 2] | max }}
+_pulsar_slurm_cpus: "{{ ansible_facts['processor_vcpus'] | default(1) | int }}"
 # slurmd falls back to the NodeName "localhost" when none matches the hostname,
 # so the node does not depend on SRC's hostname.
 slurm_nodes:

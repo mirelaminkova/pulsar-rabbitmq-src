@@ -30,8 +30,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
+        # SRC's external Ansible plugin runs the playbook with remote_ansible_version 14.6.0
+        # (ansible-core 2.21); requirements-dev.txt's ansible-core is what contributors run.
+        ansible: ["ansible==14.6.0", "ansible-core~=2.18.20"]
     runs-on: ${{ matrix.os }}
     env:
+      # A pip requirement, through the environment rather than into the script.
+      ANSIBLE: ${{ matrix.ansible }}
       # Plain recap lines for the idempotence check.
       ANSIBLE_NOCOLOR: "1"
       ANSIBLE_LOCALHOST_WARNING: "false"
@@ -45,7 +50,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Ansible
-        run: python -m pip install "$(grep '^ansible-core' requirements-dev.txt)"
+        run: |
+          python -m pip install "$ANSIBLE"
+          ansible --version
       - name: Install Ansible dependencies
         run: ansible-galaxy install -r requirements.yml
       # A separate ext4 file system at /data/ci, as SRC mounts an attached volume.

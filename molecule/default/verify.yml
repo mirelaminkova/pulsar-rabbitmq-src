@@ -129,7 +129,9 @@
     - name: Render Galaxy's runner and destination for this Pulsar
       ansible.builtin.command:
         argv:
-          - "{{ ansible_playbook_python }}"
+          # requirements-dev.txt's Python (MOLECULE_TESTS_PYTHON in CI): tests/helpers.py needs
+          # its ansible-core, which may not be the one running this playbook.
+          - "{{ lookup('env', 'MOLECULE_TESTS_PYTHON') | default(ansible_playbook_python, true) }}"
           - -m
           - tests.e2e.galaxy_config
           - "{{ ephemeral }}/pulsar_params.yml"

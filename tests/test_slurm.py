@@ -21,6 +21,7 @@ from filter_plugins.pulsar_amqp import pulsar_amqp_errors
 from tests.helpers import (
     FACTS,
     REPO,
+    facts,
     load_yaml,
     play,
     render,
@@ -178,9 +179,9 @@ def test_controller_and_compute_node_are_this_workspace():
     ],
 )
 def test_node_size_comes_from_the_workspace(memtotal, vcpus, memory, per_cpu):
-    facts = {"ansible_memtotal_mb": memtotal, "ansible_processor_vcpus": vcpus}
-    [node] = resolve("slurm_nodes", **facts)
-    config = resolve("slurm_config", **facts)
+    workspace = facts(memtotal_mb=memtotal, processor_vcpus=vcpus)
+    [node] = resolve("slurm_nodes", **workspace)
+    config = resolve("slurm_config", **workspace)
 
     assert (int(node["CPUs"]), int(node["RealMemory"])) == (vcpus, memory)
     # Slurm drains a node that reports less memory than RealMemory.
@@ -233,7 +234,9 @@ def _role_dir():
 def test_slurm_conf_as_the_role_writes_it(docker, ubuntu):
     role = _role_dir()
     defaults = yaml.safe_load((role / "defaults" / "main.yml").read_text())
+    # The role still reads top-level facts, which ansible-core injects until 2.24.
     variables = {
+        "ansible_distribution": "Ubuntu",
         "ansible_distribution_major_version": ubuntu,
         "ansible_os_family": "Debian",
         "group_names": [],
@@ -363,7 +366,7 @@ def test_slurm_drmaa_comes_from_the_galaxy_projects_ppa():
 
     assert key["src"] == "files/slurm-drmaa.asc"
     assert resolve_text(key["dest"]) == "/usr/share/keyrings/slurm-drmaa.asc"
-    assert resolve_text(repo["repo"], ansible_distribution_release="noble") == (
+    assert resolve_text(repo["repo"], **facts(distribution_release="noble")) == (
         "deb [signed-by=/usr/share/keyrings/slurm-drmaa.asc] "
         "https://ppa.launchpadcontent.net/natefoo/slurm-drmaa/ubuntu noble main"
     )
@@ -400,7 +403,8 @@ def test_slurm_runner_needs_x86_64(arch, runner, ok):
     that = check["ansible.builtin.assert"]["that"]
 
     assert (
-        resolve_text(f"{{{{ {that} }}}}", ansible_architecture=arch, pulsar_job_runner=runner) == ok
+        resolve_text(f"{{{{ {that} }}}}", **facts(architecture=arch), pulsar_job_runner=runner)
+        == ok
     )
 
 

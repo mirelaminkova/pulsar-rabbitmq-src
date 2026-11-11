@@ -71,7 +71,7 @@
     <section>
       <h2>About</h2>
       <ul>
-        <li><strong>Workspace FQDN:</strong> {{ (workspace_fqdn | default(ansible_fqdn, true)) | e }}</li>
+        <li><strong>Workspace FQDN:</strong> {{ (workspace_fqdn | default(ansible_facts['fqdn'], true)) | e }}</li>
         <li><strong>Galaxy broker:</strong> <code>amqps://{{ a.galaxy_fqdn | e }}:{{ a.port | e }}</code>, RabbitMQ user <code>{{ a.name | e }}</code>, vhost <code>{{ a.vhost | e }}</code></li>
         <li><strong>TLS:</strong> Galaxy's certificate and its hostname <code>{{ a.galaxy_fqdn | e }}</code> are verified against <code>{{ pulsar_amqp_ca_certs | e }}</code></li>
 {% if _pulsar_slurm | bool %}
@@ -87,7 +87,7 @@
     <section>
       <h2>How Galaxy and Pulsar connect</h2>
       <p>Galaxy runs RabbitMQ (component parameter <code>src_galaxy_rabbitmq: true</code>). Pulsar connects <em>to</em> it, so this workspace needs no open inbound port. Pulsar fetches inputs from and uploads outputs to Galaxy's HTTPS URL directly.</p>
-<div class="flow">Pulsar ({{ (workspace_fqdn | default(ansible_fqdn, true)) | e }}) ──AMQPS──▶ RabbitMQ on {{ a.galaxy_fqdn | e }}:{{ a.port | e }}  vhost {{ a.vhost | e }}
+<div class="flow">Pulsar ({{ (workspace_fqdn | default(ansible_facts['fqdn'], true)) | e }}) ──AMQPS──▶ RabbitMQ on {{ a.galaxy_fqdn | e }}:{{ a.port | e }}  vhost {{ a.vhost | e }}
 Pulsar ──────────── HTTPS for input/output files ───────────▶ https://{{ a.galaxy_fqdn | e }}/api/</div>
     </section>
 
@@ -133,7 +133,7 @@ Pulsar ──────────── HTTPS for input/output files ──�
     <details>
       <summary>Deployment settings</summary>
       <ul>
-        <li><strong>Host:</strong> <code>{{ inventory_hostname | e }}</code> ({{ ansible_distribution | e }} {{ ansible_distribution_version | e }}, hostname {{ ansible_hostname | e }})</li>
+        <li><strong>Host:</strong> <code>{{ inventory_hostname | e }}</code> ({{ ansible_facts['distribution'] | e }} {{ ansible_facts['distribution_version'] | e }}, hostname {{ ansible_facts['hostname'] | e }})</li>
         <li><strong>Pulsar venv:</strong> <code>{{ pulsar_venv | e }}</code></li>
         <li><strong>Directories</strong> on the storage: home <code>{{ pulsar_home | e }}</code>, persistence <code>{{ pulsar_persistence_dir | e }}</code>, job tmp <code>{{ pulsar_job_tmp_dir | e }}</code>{% if a.singularity_enabled %}, Apptainer cache <code>{{ pulsar_apptainer_cache_dir | e }}</code> and tmp <code>{{ pulsar_apptainer_tmp_dir | e }}</code>{% endif %}{% if a.docker_enabled %}, Docker data-root <code>{{ pulsar_docker_data_root | e }}</code>{% endif %}{% if _pulsar_slurm | bool %}, slurmd spool <code>{{ pulsar_slurmd_spool_dir | e }}</code>{% endif %}</li>
       </ul>

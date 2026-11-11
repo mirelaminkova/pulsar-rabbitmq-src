@@ -37,6 +37,8 @@ _BOOLEAN_WORDS = ("true", "false")
 # directory or Pulsar's installation. Galaxy's jobs_directory (`/\S*` there) is
 # <storage>/staging, so the value must also survive the one-line SRC format.
 _STORAGE_PATH = re.compile(r"/data(?:/[A-Za-z0-9_.-]+){2,}")
+# The mount point itself, as users tend to enter it: its "pulsar" directory is used.
+_MOUNT_POINT = re.compile(r"/data/([A-Za-z0-9_.-]+)/?")
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _FQDN = re.compile(rf"(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+")
 # Galaxy's _galaxy_rabbitmq_reserved_ports: RabbitMQ's own, Nginx's and Galaxy's ports.
@@ -57,13 +59,22 @@ def _boolean(value, default):
     return _BOOLEANS.get(text, value)
 
 
+def _storage_directory(value):
+    """``/data/<volume name>`` (the volume's mount point) becomes ``/data/<volume name>/pulsar``."""
+    mount_point = _MOUNT_POINT.fullmatch(value)
+    if mount_point and mount_point[1] not in (".", ".."):
+        return f"/data/{mount_point[1]}/pulsar"
+    return value
+
+
 def pulsar_amqp_settings(params):
     """Normalise the component parameters and derive the names Galaxy and Pulsar use.
 
     ``params`` has the keys galaxy_fqdn, port, name, password, manager, storage_path,
     docker_enabled, singularity_enabled, cvmfs and job_runner. Empty values (how SRC passes an
-    unset parameter) get Galaxy's defaults, or this component's for cvmfs and job_runner. The
-    result is meaningful only without :func:`pulsar_amqp_errors`.
+    unset parameter) get Galaxy's defaults, or this component's for cvmfs and job_runner. A
+    volume's mount point as storage_path stands for its ``pulsar`` directory. The result is
+    meaningful only without :func:`pulsar_amqp_errors`.
     """
     port = _text(params.get("port")) or str(DEFAULTS["port"])
     settings = {
@@ -72,7 +83,7 @@ def pulsar_amqp_settings(params):
         "name": _text(params.get("name")),
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
-        "storage_path": _text(params.get("storage_path")),
+        "storage_path": _storage_directory(_text(params.get("storage_path"))),
         # Only this workspace sees the runner; Galaxy's entry stays the same.
         "job_runner": _text(params.get("job_runner")).lower() or DEFAULTS["job_runner"],
     }
@@ -163,14 +174,16 @@ def pulsar_amqp_errors(settings):
     if not storage_path:
         errors.append(
             "pulsar_storage_path is required: attach a storage volume to the workspace and "
-            "set it to a directory on the volume, such as /data/<volume name>/pulsar"
+            "set it to the volume's mount point, /data/<volume name> (Pulsar then uses "
+            "/data/<volume name>/pulsar), or to a directory on the volume"
         )
     elif (
         not _STORAGE_PATH.fullmatch(storage_path) or os.path.normpath(storage_path) != storage_path
     ):
         errors.append(
-            "pulsar_storage_path must be a directory on an attached storage volume, "
-            "/data/<volume name>/<directory>, of A-Z a-z 0-9 _ . - without . or .., "
+            "pulsar_storage_path must be an attached storage volume's mount point, "
+            "/data/<volume name>, or a directory on it, /data/<volume name>/<directory>, "
+            "of A-Z a-z 0-9 _ . - without . or .., "
             f"got '{storage_path}'"
         )
 

@@ -48,7 +48,14 @@ def test_storage_path_is_required(value):
     [
         "/",
         "/data",
-        "/data/pulsar_storage",  # the volume itself, not a directory on it
+        "/data/",
+        "//data/vol",
+        "/data/.",
+        "/data/..",
+        "/data/./",
+        "/data/../",
+        "/data/vol//",
+        "/data/vol/./",
         "/mnt/pulsar/files",  # not where SRC mounts attached volumes
         "/var/lib/pulsar/x",
         "/opt/pulsar/config",
@@ -63,7 +70,7 @@ def test_storage_path_is_required(value):
         "data/vol/pulsar",
     ],
 )
-def test_storage_path_must_be_a_directory_on_a_data_volume(value):
+def test_invalid_storage_paths_are_refused(value):
     [error] = storage_errors(value)
     assert "/data/<volume name>/" in error
     assert value in error
@@ -72,6 +79,24 @@ def test_storage_path_must_be_a_directory_on_a_data_volume(value):
 @pytest.mark.parametrize("value", ["/data/pulsar_storage/pulsar", "/data/vol-2/a/b.c_d"])
 def test_valid_storage_paths(value):
     assert pulsar_amqp_errors(settings(storage_path=value)) == []
+
+
+# SRC mounts a volume at /data/<volume name>; the volume itself gets a pulsar directory.
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/data/pulsar_storage", "/data/pulsar_storage/pulsar"),
+        ("/data/pulsar_storage/", "/data/pulsar_storage/pulsar"),
+        (" /data/vol-2.a_b/ ", "/data/vol-2.a_b/pulsar"),
+        ("/data/...", "/data/.../pulsar"),
+        ("/data/vol/data", "/data/vol/data"),
+    ],
+)
+def test_a_volume_mount_point_gets_a_pulsar_directory(value, expected):
+    result = settings(storage_path=value)
+    assert result["storage_path"] == expected
+    assert result["jobs_directory"] == f"{expected}/staging"
+    assert pulsar_amqp_errors(result) == []
 
 
 def test_storage_path_is_trimmed():
@@ -103,10 +128,48 @@ def parsed_entry(galaxy_entry):
     return config
 
 
-@pytest.mark.parametrize("storage", [STORAGE, "/data/volume_2/a.b/pulsar-1"])
-def test_galaxy_parses_the_derived_jobs_directory(storage):
+@pytest.mark.parametrize(
+    ("storage", "expected"),
+    [
+        (STORAGE, STORAGE),
+        ("/data/volume_2/a.b/pulsar-1", "/data/volume_2/a.b/pulsar-1"),
+        ("/data/volume_2", "/data/volume_2/pulsar"),
+        ("/data/volume_2/", "/data/volume_2/pulsar"),
+    ],
+)
+def test_galaxy_parses_the_derived_jobs_directory(storage, expected):
     result = resolve("_pulsar_amqp", pulsar_storage_path=storage)
-    assert parsed_entry(result["galaxy_entry"])["jobs_directory"] == f"{storage}/staging"
+    assert parsed_entry(result["galaxy_entry"])["jobs_directory"] == f"{expected}/staging"
+
+
+# Everything that uses the storage path gets <mount point>/pulsar, never the mount point.
+def test_a_mount_point_is_used_as_its_pulsar_directory_everywhere():
+    derived, mount = "/data/vol/pulsar", {"pulsar_storage_path": "/data/vol/"}
+    page = render("welcome.html.j2", pulsar_docker="true", **mount)
+    app = render_yaml("pulsar-app.yml.j2", **mount)
+    unit = render("pulsar.service.j2", **mount)
+    dropins = resolve_text(
+        task_named(STORAGE_TASKS, "Start Docker and slurmd only with the storage mounted")["loop"],
+        pulsar_docker="true",
+        **mount,
+    )
+    check = task_named(STORAGE_TASKS, "Check that the storage path is on an attached volume")
+    create = task_named(STORAGE_TASKS, "Create the root-owned storage directory")
+
+    assert f"<strong>Storage:</strong> <code>{derived}</code>" in page
+    assert f"jobs_directory: {derived}/staging" in page
+    assert app["staging_directory"] == f"{derived}/staging"
+    assert app["persistence_directory"] == f"{derived}/persisted_data"
+    assert f" {derived}\n" in unit
+    for item in dropins:
+        assert f"check_storage.py {item['option']}{derived}\n" in render(
+            "storage-dropin.conf.j2", item=item, **mount
+        )
+    script = resolve_text(check["ansible.builtin.script"], ansible_check_mode=False, **mount)
+    assert script.endswith(f" {derived}")
+    assert resolve_text(create["ansible.builtin.file"]["path"], **mount) == derived
+    for name in ("pulsar_home", "pulsar_slurmd_spool_dir", "pulsar_docker_data_root"):
+        assert resolve(name, **mount).startswith(f"{derived}/")
 
 
 def test_welcome_page_entry_matches_app_yml_staging_directory():

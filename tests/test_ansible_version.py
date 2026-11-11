@@ -1,6 +1,6 @@
 """The playbook under SRC's Ansible: CI runs it with the version SRC's external plugin uses,
 and it reads facts through ``ansible_facts`` (top-level fact variables, INJECT_FACTS_AS_VARS,
-go away in ansible-core 2.24 and warn from 2.20)."""
+warn from ansible-core 2.20, as SRC's 2.21 shows, and go away in 2.24)."""
 
 import re
 
@@ -17,14 +17,15 @@ PLAYBOOK_FILES = sorted(
     for pattern in [
         "playbook.yml",
         "tasks/*.yml",
-        "templates/*.j2",
+        "templates/*",
         "group_vars/*.yml",
         "molecule/default/*.yml",
     ]
     for path in REPO.glob(pattern)
 )
 
-# Ansible's special variables with an ansible_ prefix that are not facts.
+# Ansible's special and connection variables with an ansible_ prefix that are not facts; add
+# one here when the playbook starts to use it. Comments count too: name facts without the prefix.
 NOT_FACTS = {
     "ansible_facts",
     "ansible_check_mode",
@@ -41,6 +42,16 @@ NOT_FACTS = {
     "ansible_connection",
     "ansible_python_interpreter",
 }
+
+
+def dev_ansible_core():
+    """requirements-dev.txt's ansible-core requirement: the unit tests' and contributors'."""
+    [line] = [
+        line
+        for line in (REPO / "requirements-dev.txt").read_text().splitlines()
+        if line.startswith("ansible-core")
+    ]
+    return line
 
 
 def test_playbook_files_are_found():
@@ -62,23 +73,31 @@ def test_ci_runs_the_playbook_with_srcs_ansible(workflow):
     assert SRC_ANSIBLE in job["strategy"]["matrix"]["ansible"]
     # The pip requirement goes through the environment, not into the script.
     assert job["env"]["ANSIBLE"] == "${{ matrix.ansible }}"
-    assert any('pip install' in script and '"$ANSIBLE"' in script for script in scripts)
+    assert any("pip install" in script and '"$ANSIBLE"' in script for script in scripts)
     assert not [script for script in scripts if "matrix.ansible" in script]
-    # Nothing installs requirements-dev.txt's ansible-core next to it.
-    assert not [script for script in scripts if "requirements-dev" in script and "$ANSIBLE" in script]
+    # requirements-dev.txt's ansible-core never lands next to it, only in its own virtualenv.
+    assert not [
+        script
+        for script in scripts
+        if "requirements-dev" in script and '"$MOLECULE_TESTS_PYTHON" -m pip' not in script
+    ]
 
 
 @pytest.mark.parametrize("workflow", ["slurm-live.yml", "molecule.yml"])
 def test_ci_runs_the_playbook_with_the_test_tooling_ansible_as_well(workflow):
     # requirements-dev.txt's ansible-core: the version contributors run the playbook with.
-    [dev] = [
-        line
-        for line in (REPO / "requirements-dev.txt").read_text().splitlines()
-        if line.startswith("ansible-core")
-    ]
+    dev = dev_ansible_core()
     [job] = load_yaml(f".github/workflows/{workflow}")["jobs"].values()
 
     assert dev in job["strategy"]["matrix"]["ansible"]
+
+
+def test_pre_commit_hooks_use_the_test_tooling_ansible():
+    dev = dev_ansible_core()
+    pins = re.findall(r"ansible-core==([\d.]+)", (REPO / ".pre-commit-config.yaml").read_text())
+
+    assert len(pins) == 2
+    assert {f"ansible-core~={pin}" for pin in pins} == {dev}
 
 
 def test_molecule_renders_galaxys_configuration_with_the_test_tooling():

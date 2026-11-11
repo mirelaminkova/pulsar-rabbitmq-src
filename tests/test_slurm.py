@@ -310,7 +310,7 @@ def test_local_runner_stops_slurm_if_installed():
         "enabled": False,
     }
     assert stop["loop"] == ["slurmctld", "slurmd"]
-    assert stop["when"] == "(item ~ '.service') in ansible_facts.services"
+    assert stop["when"] == "(item ~ '.service') in ansible_facts['services']"
 
 
 def test_slurm_tasks():

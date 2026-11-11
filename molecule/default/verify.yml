@@ -126,6 +126,18 @@
       delegate_to: localhost
       no_log: true
 
+    # Not inside the no_log task below, which would hide the traceback.
+    - name: Check that the test tooling has an ansible-core that tests/helpers.py supports
+      ansible.builtin.assert:
+        that: >-
+          lookup('env', 'MOLECULE_TESTS_PYTHON') | length > 0
+          or ansible_version.full is version('2.19', '<')
+        fail_msg: >-
+          tests/helpers.py needs requirements-dev.txt's ansible-core 2.18: set MOLECULE_TESTS_PYTHON
+          to the python of a virtualenv with requirements-dev.txt.
+        quiet: true
+      delegate_to: localhost
+
     - name: Render Galaxy's runner and destination for this Pulsar
       ansible.builtin.command:
         argv:

@@ -11,4 +11,4 @@
     state: stopped
     enabled: false
   loop: [slurmctld, slurmd]
-  when: (item ~ '.service') in ansible_facts.services
+  when: (item ~ '.service') in ansible_facts['services']

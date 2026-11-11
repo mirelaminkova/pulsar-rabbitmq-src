@@ -15,7 +15,8 @@
     create_home: false
     shell: /usr/sbin/nologin
     groups: "{{ ['docker'] if _pulsar_amqp.docker_enabled else omit }}"
-    append: true
+    # ansible-core 2.20+ refuses append without groups.
+    append: "{{ true if _pulsar_amqp.docker_enabled else omit }}"
   register: _pulsar_user
 
 # Every directory the pulsar user owns sits in a root-owned one (the storage directory,

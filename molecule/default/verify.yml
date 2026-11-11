@@ -1,0 +1,185 @@
+---
+# Integration: the deployed Pulsar, Slurm and storage. End to end: a job from Galaxy's client.
+- name: Verify the Pulsar workspace
+  hosts: pulsar_workspace
+  gather_facts: false
+  vars:
+    storage: /data/molecule
+    pulsar_data: "{{ storage }}/pulsar"
+  tasks:
+    # The deployment's own check: Pulsar's login, vhost and TLS settings, through its code.
+    - name: Check that Pulsar consumes its setup queue (check_amqp.py)
+      ansible.builtin.command:
+        argv: [/opt/pulsar/venv/bin/python, /opt/pulsar/check_amqp.py, /opt/pulsar/config/app.yml]
+      register: _check_amqp
+      changed_when: false
+
+    - name: Read Pulsar's app.yml
+      ansible.builtin.slurp:
+        src: /opt/pulsar/config/app.yml
+      register: _app_yml
+      no_log: true
+
+    - name: Pulsar verifies Galaxy's certificate and hostname against the system CA bundle
+      vars:
+        app: "{{ _app_yml.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - app.amqp_connect_ssl_cert_reqs == 'cert_required'
+          - app.amqp_connect_ssl_ca_certs == '/etc/ssl/certs/ca-certificates.crt'
+          - app.amqp_connect_ssl_server_hostname == 'galaxy.molecule.test'
+          - "'ssl' not in app.message_queue_url"
+          - app.managers._default_.type == 'queued_drmaa'
+        quiet: true
+
+    # The negative case: the same settings with another hostname than the certificate's
+    # are refused, so the success above is verification at work.
+    - name: Write app.yml with a hostname the certificate does not name
+      ansible.builtin.copy:
+        dest: /root/app-wrong-hostname.yml
+        content: >-
+          {{ _app_yml.content | b64decode | from_yaml
+             | combine({'amqp_connect_ssl_server_hostname': 'wrong.molecule.test'}) | to_nice_yaml }}
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Check the connection with the wrong hostname
+      ansible.builtin.command:
+        argv: [/opt/pulsar/venv/bin/python, /opt/pulsar/check_amqp.py, /root/app-wrong-hostname.yml]
+      register: _wrong_hostname
+      changed_when: false
+      failed_when: _wrong_hostname.rc != 1 or 'certificate' not in _wrong_hostname.stdout | lower
+
+    - name: Get the state of the services
+      ansible.builtin.command:
+        argv: [systemctl, is-active, pulsar, munge, slurmctld, slurmd]
+      register: _services
+      changed_when: false
+
+    - name: Get the Slurm node's state
+      ansible.builtin.command:
+        argv: [sinfo, --noheader, --Node, --format, "%T"]
+      register: _sinfo
+      changed_when: false
+
+    - name: Pulsar, munge, slurmctld and slurmd run, and the node takes jobs
+      ansible.builtin.assert:
+        that:
+          - _services.stdout_lines == ['active', 'active', 'active', 'active']
+          - _sinfo.stdout | trim in ['idle', 'mixed', 'allocated']
+        quiet: true
+
+    - name: Find the mount of each data directory
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --output, TARGET, --target, "{{ pulsar_data }}/{{ item }}"]
+      loop: [staging, persisted_data, home, job_tmp, slurmd, apptainer_cache, apptainer_tmp]
+      register: _mounts
+      changed_when: false
+
+    - name: Pulsar's data directories are on the storage mount
+      ansible.builtin.assert:
+        that: item.stdout | trim == storage
+        fail_msg: "{{ item.item }} is on {{ item.stdout }}, not on {{ storage }}"
+        quiet: true
+      loop: "{{ _mounts.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+- name: Verify the broker and run a job from Galaxy
+  hosts: galaxy_workspace
+  gather_facts: false
+  vars:
+    node: "{{ molecule_rabbitmq_node }}"
+    pulsar: "{{ hostvars['pulsar'] }}"
+    vhost: "{{ molecule_vhost }}"
+    project: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+    ephemeral: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: List the consumers on the Pulsar's vhost
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, list_consumers, -p, "{{ vhost }}", --no-table-headers, queue_name]
+      register: _consumers
+      changed_when: false
+
+    - name: List the connections
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, list_connections, --no-table-headers, user, vhost, ssl]
+      register: _connections
+      changed_when: false
+
+    - name: Pulsar consumes pulsar__setup on its vhost, logged in as its user over TLS
+      ansible.builtin.assert:
+        that:
+          - "'pulsar__setup' in _consumers.stdout_lines | map('trim') | list"
+          - "[pulsar.pulsar_amqp_name, vhost, 'true'] in _connections.stdout_lines | map('split') | list"
+        fail_msg: "consumers: {{ _consumers.stdout_lines }}, connections: {{ _connections.stdout_lines }}"
+
+    # Galaxy's runner and destination for this Pulsar, from the Galaxy component's templates and
+    # the entry the welcome page derives from the component parameters (tests/e2e/galaxy_config.py).
+    - name: Write the component parameters for Galaxy's job configuration
+      ansible.builtin.copy:
+        dest: "{{ ephemeral }}/pulsar_params.yml"
+        content: "{{ pulsar | dict2items | selectattr('key', 'match', '^pulsar_') | items2dict | to_nice_yaml }}"
+        mode: '0600'
+      delegate_to: localhost
+      no_log: true
+
+    - name: Render Galaxy's runner and destination for this Pulsar
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -m
+          - tests.e2e.galaxy_config
+          - "{{ ephemeral }}/pulsar_params.yml"
+          - "{{ molecule_galaxy_url }}"
+        chdir: "{{ project }}"
+      environment:
+        GALAXY_AMQP_PASSWORD: "{{ molecule_galaxy_amqp_password }}"
+      delegate_to: localhost
+      register: _galaxy_job_config
+      changed_when: false
+      no_log: true
+
+    - name: Install Galaxy's job configuration
+      ansible.builtin.copy:
+        dest: /opt/galaxy-client/job.json
+        content: "{{ _galaxy_job_config.stdout }}"
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Run a job from Galaxy's client through the broker
+      ansible.builtin.command:
+        argv:
+          - /opt/galaxy-client/venv/bin/python
+          - /opt/galaxy-client/galaxy_job.py
+          - /opt/galaxy-client/job.json
+          - --timeout
+          - "600"
+      register: _galaxy_job
+      changed_when: false
+      failed_when: false
+
+    - name: Show what Galaxy received
+      ansible.builtin.debug:
+        msg: "{{ _galaxy_job.stdout_lines + _galaxy_job.stderr_lines[-30:] }}"
+
+    # Through Slurm (DRMAA) as the pulsar user, in staging on the storage; outputs back over
+    # HTTP; status updates before the final one.
+    - name: The job completed through Slurm on the storage and its outputs arrived
+      vars:
+        result: "{{ _galaxy_job.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _galaxy_job.rc == 0
+          - result.status == 'complete'
+          - result.returncode == 0
+          - "'running' in result.states"
+          - result.inputs_served >= 1
+          - result.received.output == "galaxy\npulsar\nrabbitmq\n"
+          - result.report.user == 'pulsar'
+          - result.report.slurm_job != 'none'
+          - result.report.cwd.startswith(pulsar.pulsar_storage_path ~ '/staging/' ~ result.job_id ~ '/')

@@ -1,0 +1,78 @@
+---
+# Integration and end-to-end tests (molecule/default): the playbook converges on an SRC test
+# workspace (Ubuntu 24.04 and 22.04) against the Galaxy component's RabbitMQ with TLS on a
+# second one, with pulsar_job_runner slurm and the storage on a separate ext4 volume; then
+# Galaxy's client (tests/e2e/) runs a job through the broker, Slurm and HTTP staging.
+name: Molecule
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  # Weekly as well, like the Slurm live check: the test images and PPAs change.
+  schedule:
+    - cron: "37 4 * * 1"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  molecule:
+    name: molecule (${{ matrix.distro }})
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu_noble, ubuntu_jammy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ANSIBLE_FORCE_COLOR: "1"
+      # The Pulsar workspace's image (molecule.yml).
+      MOLECULE_DISTRO: ${{ matrix.distro }}
+      MOLECULE_STORAGE: /mnt/molecule-volume
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            molecule/requirements.txt
+      # requirements-dev.txt: verify.yml renders Galaxy's job configuration (tests/e2e/).
+      - name: Install Molecule and the test tooling
+        run: python -m pip install -r requirements-dev.txt -r molecule/requirements.txt
+      - name: Install Ansible dependencies
+        run: |
+          ansible-galaxy install -r requirements.yml
+          ansible-galaxy collection install -r molecule/default/requirements.yml
+      # A separate ext4 file system, which the Pulsar workspace gets at /data/molecule, as
+      # SRC mounts an attached volume at /data/<volume name>.
+      - name: Attach a storage volume
+        run: |
+          sudo fallocate -l 6G /mnt/molecule-volume.img
+          sudo mkfs.ext4 -q /mnt/molecule-volume.img
+          sudo mkdir -p "$MOLECULE_STORAGE"
+          sudo mount -o loop /mnt/molecule-volume.img "$MOLECULE_STORAGE"
+          findmnt "$MOLECULE_STORAGE"
+      # Containers stay up on failure for the logs below.
+      - name: Molecule test
+        run: molecule test --destroy=never
+      - name: Logs
+        if: failure()
+        run: |
+          docker exec pulsar journalctl --no-pager -n 100 -u pulsar -u slurmd -u slurmctld -u munge || true
+          docker exec pulsar tail -n 50 /var/log/slurm/slurmctld.log /var/log/slurm/slurmd.log || true
+          docker exec galaxy journalctl --no-pager -n 100 -u rabbitmq-server || true
+      - name: Destroy the containers
+        if: always()
+        run: molecule destroy

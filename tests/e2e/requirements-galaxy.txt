@@ -1,0 +1,12 @@
+# The Galaxy side of the end-to-end test (tests/e2e/galaxy_job.py): Pulsar's client library
+# and its AMQP stack as Galaxy 26.1 pins them (lib/galaxy/dependencies/pinned-requirements.txt),
+# the Galaxy release the Galaxy component deploys by default.
+pulsar-galaxy-lib[amqp]==0.15.15
+kombu==5.6.2
+amqp==5.3.1
+vine==5.1.0
+requests==2.34.2
+PyYAML==6.0.3
+# Galaxy's own packages that the client imports (in Galaxy's source tree, on PyPI separately).
+galaxy-util==26.1.2
+galaxy-tool-util==26.1.2

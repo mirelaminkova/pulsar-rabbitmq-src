@@ -87,6 +87,11 @@ def test_certificate_and_hostname_verification():
 VENDORED_FILES = {
     "src_galaxy.py": "filter_plugins/src_galaxy.py",
     "pulsar_amqp_app.yml.j2": "templates/rabbitmq/pulsar_amqp_app.yml.j2",
+    # Galaxy's runner and destination for this Pulsar, used by the end-to-end test (tests/e2e/).
+    "job_conf.yml.j2": "templates/galaxy/config/job_conf.yml.j2",
+    "destinations.yml.j2": "files/galaxy/tpv/destinations.yml.j2",
+    # Galaxy's RabbitMQ configuration, which molecule's test broker uses.
+    "rabbitmq.conf.j2": "templates/rabbitmq/rabbitmq.conf.j2",
 }
 
 

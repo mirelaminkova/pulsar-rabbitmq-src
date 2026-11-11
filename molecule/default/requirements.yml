@@ -1,0 +1,8 @@
+---
+# Molecule's Docker driver (molecule-plugins' create and destroy playbooks); the playbook's
+# own are in requirements.yml.
+collections:
+  - name: community.docker
+    version: 5.4.0
+  - name: ansible.posix
+    version: 2.2.2

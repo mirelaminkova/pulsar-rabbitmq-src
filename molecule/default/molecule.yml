@@ -1,0 +1,83 @@
+---
+# Two SRC test workspaces on one network, as a Galaxy workspace and this Pulsar's:
+# - galaxy: the Galaxy component's RabbitMQ (Galaxy's rabbitmq.conf, TLS with a test CA, user
+#   and vhost of the entry), the Galaxy client of tests/e2e/ and its job files API;
+# - pulsar: this playbook with pulsar_job_runner slurm and the storage on a separate mount.
+# Docker rather than Galaxy's podman: rootful and privileged, for systemd, Slurm and an ext4
+# volume of the runner mounted at /data/molecule (MOLECULE_STORAGE, see .github/workflows).
+driver:
+  name: docker
+platforms:
+  - name: galaxy
+    image: ghcr.io/utrechtuniversity/src-test-workspace:ubuntu_noble
+    pre_build_image: true
+    command: /sbin/init
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      - name: molecule-src
+        aliases: [galaxy.molecule.test]
+    groups: [galaxy_workspace]
+  - name: pulsar
+    image: ghcr.io/utrechtuniversity/src-test-workspace:${MOLECULE_DISTRO:-ubuntu_noble}
+    pre_build_image: true
+    command: /sbin/init
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ${MOLECULE_STORAGE:-/mnt/molecule-volume}:/data/molecule:rw
+    networks:
+      - name: molecule-src
+    groups: [pulsar_workspace]
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      remote_tmp: /tmp
+  env:
+    # The playbook's hosts.
+    variable_host: pulsar
+  inventory:
+    group_vars:
+      all:
+        # Test CA, Galaxy workspace certificate and key (prepare.yml), on the controller.
+        molecule_tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
+        # The Galaxy component's RabbitMQ node (_galaxy_rabbitmq_node).
+        molecule_rabbitmq_node: rabbit@localhost
+        molecule_vhost: "/pulsar/{{ hostvars['pulsar'].pulsar_amqp_name }}"
+    host_vars:
+      # Component parameters, as SRC passes them (host vars beat group_vars/all.yml).
+      pulsar:
+        pulsar_galaxy_fqdn: galaxy.molecule.test
+        pulsar_amqp_port: "5671"
+        pulsar_amqp_name: molecule
+        pulsar_amqp_password: Molecule.Pulsar-1234
+        pulsar_manager: ""
+        pulsar_storage_path: /data/molecule/pulsar
+        pulsar_job_runner: slurm
+        pulsar_cvmfs: "false"
+        pulsar_apptainer: "true"
+        pulsar_docker: "false"
+        pulsar_configure_src_proxy: false
+      galaxy:
+        # Galaxy's own RabbitMQ user (job_conf.yml's amqp_url), as /etc/galaxy-rabbitmq/galaxy.pass.
+        molecule_galaxy_amqp_password: Molecule.Galaxy-5678
+        molecule_galaxy_url: http://galaxy.molecule.test:8080
+scenario:
+  # Dependencies come from the workflow (requirements.yml, molecule/default/requirements.yml).
+  test_sequence:
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
+verifier:
+  name: ansible

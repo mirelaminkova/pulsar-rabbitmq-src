@@ -46,8 +46,8 @@ NOT_PERSISTENT = ("tmpfs", "ramfs", "devtmpfs", "overlay", "squashfs")
 # Docker's overlay2 storage driver needs a local file system under its data-root.
 NOT_FOR_DOCKER = ("nfs", "cifs", "smb3", "fuse", "ceph", "glusterfs", "9p", "virtiofs")
 ATTACH = (
-    "attach a storage volume to the workspace and set pulsar_storage_path to a directory "
-    "on it, such as /data/<volume name>/pulsar"
+    "attach a storage volume to the workspace and set pulsar_storage_path to its mount "
+    "point, /data/<volume name>, or a directory on it"
 )
 
 

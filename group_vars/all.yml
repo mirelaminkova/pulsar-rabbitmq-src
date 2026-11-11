@@ -14,9 +14,10 @@ pulsar_amqp_name: ""
 pulsar_amqp_password: ""
 # The entry's `manager`.
 pulsar_manager: _default_
-# A directory on the workspace's attached storage volume, which SRC mounts at
-# /data/<volume name>: /data/<volume name>/pulsar, say. Required. All of Pulsar's data
-# lives below it, including staging, the entry's `jobs_directory` (<path>/staging).
+# The workspace's attached storage volume, which SRC mounts at /data/<volume name>: that
+# mount point (Pulsar then uses /data/<volume name>/pulsar) or a directory on it. Required.
+# All of Pulsar's data lives in that storage directory, including staging, the entry's
+# `jobs_directory` (<storage directory>/staging).
 pulsar_storage_path: ""
 # Mount the Galaxy project's CVMFS repositories under /cvmfs (reference data for
 # Galaxy's tool data tables), as the Galaxy component does with src_galaxy_cvmfs.

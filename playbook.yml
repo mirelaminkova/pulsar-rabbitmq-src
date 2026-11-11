@@ -20,7 +20,8 @@
         fail_msg: >-
           pulsar_staging_dir is replaced by pulsar_storage_path (staging is
           <pulsar_storage_path>/staging): remove it from the catalog item and set
-          pulsar_storage_path to a directory on an attached storage volume.
+          pulsar_storage_path to an attached storage volume's mount point,
+          /data/<volume name>, or a directory on it.
         quiet: true
 
     - name: Check supported workspace OS

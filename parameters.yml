@@ -14,7 +14,7 @@ pulsar_amqp_password: ""
 pulsar_manager: _default_
 # The workspace's attached storage volume: its mount point /data/<volume name> (Pulsar then
 # uses /data/<volume name>/pulsar) or a directory on it. Required. Pulsar keeps all its data
-# there; the entry's jobs_directory is <that directory>/staging.
+# there; the entry's jobs_directory is <storage directory>/staging.
 pulsar_storage_path: ""
 # Mount the Galaxy CVMFS repositories (reference data). "false" leaves CVMFS out.
 pulsar_cvmfs: "true"

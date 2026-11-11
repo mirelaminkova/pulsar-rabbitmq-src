@@ -59,7 +59,7 @@ def _boolean(value, default):
     return _BOOLEANS.get(text, value)
 
 
-def _storage_path(value):
+def _storage_directory(value):
     """``/data/<volume name>`` (the volume's mount point) becomes ``/data/<volume name>/pulsar``."""
     mount_point = _MOUNT_POINT.fullmatch(value)
     if mount_point and mount_point[1] not in (".", ".."):
@@ -83,7 +83,7 @@ def pulsar_amqp_settings(params):
         "name": _text(params.get("name")),
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
-        "storage_path": _storage_path(_text(params.get("storage_path"))),
+        "storage_path": _storage_directory(_text(params.get("storage_path"))),
         # Only this workspace sees the runner; Galaxy's entry stays the same.
         "job_runner": _text(params.get("job_runner")).lower() or DEFAULTS["job_runner"],
     }

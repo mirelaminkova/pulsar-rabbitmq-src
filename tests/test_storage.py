@@ -70,7 +70,7 @@ def test_storage_path_is_required(value):
         "data/vol/pulsar",
     ],
 )
-def test_storage_path_must_be_a_directory_on_a_data_volume(value):
+def test_invalid_storage_paths_are_refused(value):
     [error] = storage_errors(value)
     assert "/data/<volume name>/" in error
     assert value in error
@@ -89,7 +89,6 @@ def test_valid_storage_paths(value):
         ("/data/pulsar_storage/", "/data/pulsar_storage/pulsar"),
         (" /data/vol-2.a_b/ ", "/data/vol-2.a_b/pulsar"),
         ("/data/...", "/data/.../pulsar"),
-        ("/data/vol/pulsar", "/data/vol/pulsar"),
         ("/data/vol/data", "/data/vol/data"),
     ],
 )

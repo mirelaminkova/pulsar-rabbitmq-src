@@ -60,7 +60,8 @@ jobs:
         run: |
           cat > "$RUNNER_TEMP/params.yml" <<'PARAMS'
           ansible_python_interpreter: /usr/bin/python3
-          pulsar_storage_path: /data/ci/pulsar
+          # The mount point itself, as users enter it: the component uses /data/ci/pulsar.
+          pulsar_storage_path: /data/ci
           pulsar_galaxy_fqdn: galaxy.example.org
           pulsar_amqp_name: ci
           pulsar_amqp_password: Ci.Password-1234

@@ -7,6 +7,7 @@
   vars:
     storage: /data/molecule
     pulsar_data: "{{ storage }}/pulsar"
+    vhost: "{{ molecule_vhost }}"
   tasks:
     # The deployment's own check: Pulsar's login, vhost and TLS settings, through its code.
     - name: Check that Pulsar consumes its setup queue (check_amqp.py)
@@ -14,6 +15,12 @@
         argv: [/opt/pulsar/venv/bin/python, /opt/pulsar/check_amqp.py, /opt/pulsar/config/app.yml]
       register: _check_amqp
       changed_when: false
+
+    - name: Read the broker connection state the deployment recorded
+      ansible.builtin.include_tasks: tasks/verify-state.yml
+      vars:
+        expected_state: connected
+        expected_message: "Pulsar consumes pulsar_production__setup in vhost {{ vhost }}"
 
     - name: Read Pulsar's app.yml
       ansible.builtin.slurp:
@@ -129,15 +136,12 @@
       loop_control:
         label: "{{ item.item }}"
 
-- name: Verify the broker and run a job from Galaxy
+- name: Verify the broker
   hosts: galaxy_workspace
   gather_facts: false
   vars:
     node: "{{ molecule_rabbitmq_node }}"
-    pulsar: "{{ hostvars['pulsar'] }}"
     vhost: "{{ molecule_vhost }}"
-    project: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
-    ephemeral: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
   tasks:
     - name: List the consumers on the Pulsar's vhost
       ansible.builtin.command:
@@ -158,6 +162,109 @@
           - "[molecule_mq_user, vhost, 'true'] in _connections.stdout_lines | map('split') | list"
         fail_msg: "consumers: {{ _consumers.stdout_lines }}, connections: {{ _connections.stdout_lines }}"
 
+# A first deployment: the BYOC account does not exist until byoc-sync's pull request is
+# merged and deployed. The broker refuses Pulsar's login; the deployment passes and records
+# "waiting", and the unit keeps restarting Pulsar (files/pulsar_main.py exits it).
+- name: Remove the BYOC account, as before byoc-sync's pull request is merged
+  hosts: galaxy_workspace
+  gather_facts: false
+  vars:
+    node: "{{ molecule_rabbitmq_node }}"
+  tasks:
+    - name: Delete the BYOC user
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, delete_user, "{{ molecule_mq_user }}"]
+      changed_when: true
+
+    - name: Close the deleted user's connections
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, close_all_user_connections, "{{ molecule_mq_user }}", "account removed"]
+      changed_when: true
+
+- name: Deploy without the BYOC account
+  ansible.builtin.import_playbook: ../../playbook.yml
+
+- name: Verify the deployment without the account
+  hosts: pulsar_workspace
+  gather_facts: false
+  tasks:
+    - name: The deployment recorded "waiting" with the check's message
+      ansible.builtin.include_tasks: tasks/verify-state.yml
+      vars:
+        expected_state: waiting
+        expected_message: "refused the login of user {{ molecule_mq_user }}"
+
+    - name: Get the unit's restarts and state
+      ansible.builtin.command:
+        argv: [systemctl, show, pulsar, --property=NRestarts, --property=ActiveState]
+      register: _unit
+      changed_when: false
+
+    # Restart=always, StartLimitIntervalSec=0: the unit restarts Pulsar (not failed) after
+    # every refused login.
+    - name: The unit keeps restarting Pulsar
+      ansible.builtin.assert:
+        that:
+          - "'ActiveState=failed' not in _unit.stdout_lines"
+          - _unit.stdout_lines | select('match', '^NRestarts=') | first | split('=') | last | int > 0
+        fail_msg: "{{ _unit.stdout_lines }}"
+
+- name: Create the BYOC account, as byoc-sync's merged pull request does
+  hosts: galaxy_workspace
+  gather_facts: false
+  vars:
+    node: "{{ molecule_rabbitmq_node }}"
+    pulsar: "{{ hostvars['pulsar'] }}"
+    vhost: "{{ molecule_vhost }}"
+  tasks:
+    - name: Create the Pulsar's BYOC user
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_user, "{{ molecule_mq_user }}"]
+        stdin: "{{ pulsar.pulsar_amqp_password }}"
+      changed_when: true
+      no_log: true
+
+    - name: Give the BYOC user its vhost
+      ansible.builtin.command:
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, set_permissions, -p, "{{ vhost }}", "{{ molecule_mq_user }}", ".*", ".*", ".*"]
+      changed_when: true
+
+- name: Pulsar connects by itself once the account exists
+  hosts: pulsar_workspace
+  gather_facts: false
+  tasks:
+    # The README's command to run the check again; Pulsar's next restart logs in.
+    - name: Wait for Pulsar to consume its setup queue
+      ansible.builtin.command:
+        argv: [/opt/pulsar/venv/bin/python, /opt/pulsar/check_amqp.py, /opt/pulsar/config/app.yml]
+      register: _reconnected
+      until: _reconnected.rc == 0
+      retries: 18
+      delay: 5
+      changed_when: false
+
+# The rerun after the admins merged: changes nothing but records "connected".
+- name: Deploy again with the BYOC account
+  ansible.builtin.import_playbook: ../../playbook.yml
+
+- name: Verify the rerun with the account
+  hosts: pulsar_workspace
+  gather_facts: false
+  tasks:
+    - name: The rerun recorded "connected"
+      ansible.builtin.include_tasks: tasks/verify-state.yml
+      vars:
+        expected_state: connected
+        expected_message: "Pulsar consumes pulsar_production__setup"
+
+- name: Run a job from Galaxy
+  hosts: galaxy_workspace
+  gather_facts: false
+  vars:
+    pulsar: "{{ hostvars['pulsar'] }}"
+    project: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+    ephemeral: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
     # Galaxy's runner and destination for this Pulsar, from byoc-sync's templates and the
     # component parameters (tests/e2e/galaxy_config.py); the password goes into the runner's URL.
     - name: Write the component parameters for Galaxy's job configuration
@@ -237,3 +344,33 @@
           - result.report.user == 'pulsar'
           - result.report.slurm_job != 'none'
           - result.report.cwd.startswith(pulsar.pulsar_storage_path ~ '/staging/' ~ result.job_id ~ '/')
+
+# A broker that cannot be reached is an error: the deployment fails with the check's message
+# and records "error". Run from the controller, as an imported play could not be allowed to
+# fail. An unresolvable host: a dropped connection would be retried for two minutes first.
+- name: Deploy against an unreachable broker host
+  hosts: pulsar_workspace
+  gather_facts: false
+  vars:
+    project: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  tasks:
+    - name: Run the playbook with a broker host that does not resolve
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
+          - -i
+          - "{{ ansible_inventory_sources | first }}"
+          - playbook.yml
+          - -e
+          - pulsar_amqp_host=nowhere.molecule.test
+        chdir: "{{ project }}"
+      delegate_to: localhost
+      register: _unreachable
+      changed_when: true
+      failed_when: _unreachable.rc == 0 or 'Cannot resolve nowhere.molecule.test' not in _unreachable.stdout
+
+    - name: The deployment recorded "error" with the check's message
+      ansible.builtin.include_tasks: tasks/verify-state.yml
+      vars:
+        expected_state: error
+        expected_message: "Cannot resolve nowhere.molecule.test"

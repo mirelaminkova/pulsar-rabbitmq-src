@@ -279,7 +279,7 @@ def test_slurm_conf_as_the_role_writes_it(docker, ubuntu):
 
 
 def test_slurm_is_set_up_before_pulsar_and_stopped_for_local():
-    names = [t.get("name") for t in play()["tasks"]]
+    names = [t.get("name") for t in tasks(play()["tasks"])]
     slurm = task_named(play()["tasks"], "Run Pulsar's jobs through Slurm on this workspace")
     off = task_named(play()["tasks"], "Stop Slurm when Pulsar runs jobs itself")
     pulsar = "Install Pulsar and connect it to Galaxy's RabbitMQ"
@@ -465,10 +465,10 @@ def test_live_check_can_skip_only_the_broker_and_docker_install():
         tasks("tasks/pulsar.yml"),
         "Check that Pulsar consumes its setup queue on Galaxy's broker",
     )
-    report = task_named(tasks("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker")
+    outcome = task_named(tasks("tasks/pulsar.yml"), "Record the outcome of the broker check")
     [docker] = [r for r in play()["roles"] if r["role"] == "geerlingguy.docker"]
 
-    assert check["tags"] == report["tags"] == ["broker-check"]
+    assert check["tags"] == outcome["tags"] == ["broker-check"]
     assert docker["tags"] == ["docker-install"]
 
 

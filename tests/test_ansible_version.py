@@ -31,6 +31,7 @@ NOT_FACTS = {
     "ansible_check_mode",
     "ansible_diff_mode",
     "ansible_playbook_python",
+    "ansible_inventory_sources",
     "ansible_play_hosts",
     "ansible_play_hosts_all",
     "ansible_run_tags",
@@ -106,7 +107,7 @@ def test_molecule_renders_galaxys_configuration_with_the_test_tooling():
     [render] = [
         t
         for play in verify
-        for t in play["tasks"]
+        for t in play.get("tasks", [])  # import_playbook plays have none
         if t.get("name") == "Render Galaxy's runner and destination for this Pulsar"
     ]
     [job] = load_yaml(".github/workflows/molecule.yml")["jobs"].values()

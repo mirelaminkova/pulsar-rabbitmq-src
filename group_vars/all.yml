@@ -62,9 +62,11 @@ _pulsar_slurm: "{{ _pulsar_amqp.job_runner == 'slurm' }}"
 _pulsar_byoc_form: >-
   {{ _pulsar_amqp | pulsar_byoc_form(ansible_facts['processor_vcpus'] | default(1),
                                      ansible_facts['memtotal_mb']) }}
-# The connection state the welcome page shows, as the tolerant broker check leaves it
-# (issue #22 sets this fact from its state file): state connected | waiting | error |
-# unknown, the check's message, and when it ran. Until the check has run: unknown.
+# The connection state the welcome page shows: connected, waiting (the BYOC account is not
+# created yet) or error, with the broker check's message and the time (ISO 8601, UTC).
+# tasks/pulsar.yml sets the fact and writes pulsar_byoc_state_file; unknown while the check
+# has not run: skipped (CI's Slurm live check), in check mode, or after a failure before it
+# (the welcome page is still written then).
 _pulsar_byoc_state: {"state": "unknown", "message": "", "checked_at": ""}
 # The credentials, root-only on the storage, and the helper that loads or creates them
 # (tasks/credentials.yml), next to the storage check.
@@ -131,6 +133,11 @@ pulsar_docker_data_root: "{{ _pulsar_amqp.storage_path }}/docker"
 pulsar_venv: /opt/pulsar/venv
 pulsar_config_dir: /opt/pulsar/config
 pulsar_check_script: /opt/pulsar/check_amqp.py
+# files/pulsar_main.py: the unit runs pulsar-main through it, so that Pulsar exits (and
+# the unit restarts it) when a broker consumer quits, as on a refused login.
+pulsar_main_script: /opt/pulsar/pulsar_main.py
+# Where the broker check's state (_pulsar_byoc_state) is written.
+pulsar_byoc_state_file: "{{ pulsar_config_dir }}/byoc-state.json"
 # files/check_storage.py, run as root before Pulsar, Docker and slurmd start, in a directory
 # only root can write to and that holds only this component's root-owned scripts, as Python
 # 3.10's -I still puts the script's directory on sys.path.

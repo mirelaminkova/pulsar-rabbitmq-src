@@ -75,6 +75,8 @@ def read_store(path):
         info = os.lstat(path)
     except FileNotFoundError:
         return None
+    except OSError as error:
+        raise CredentialsError(f"cannot read {path}: {error.strerror}") from None
     if not stat.S_ISREG(info.st_mode):
         raise CredentialsError(f"{path} must be a regular file, not a link or a directory")
     if info.st_uid != os.geteuid():
@@ -114,6 +116,12 @@ def write_store(path, credentials):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        # The rename too, so that the store the playbook goes on with survives a crash.
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as error:
         os.unlink(temporary)
         raise CredentialsError(f"cannot write {path}: {error.strerror}") from None

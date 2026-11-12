@@ -158,7 +158,7 @@ def test_given_credentials_are_stored_on_the_first_run(store):
     [({"name": "hpc_byoc"}, "pulsar_amqp_name"), ({"password": "short"}, "pulsar_amqp_password")],
 )
 def test_an_invalid_given_value_is_refused_and_nothing_is_stored(store, given, parameter):
-    error = failure(store, **given)
+    error = failure(store, names_store=False, **given)
 
     assert parameter in error
     assert "byoc-sync" in error
@@ -191,11 +191,12 @@ def test_no_write_reports_a_change_without_making_it(store):
 # A store that cannot be trusted is refused, without echoing anything in it.
 
 
-def failure(store, **given):
+def failure(store, names_store=True, **given):
     code, out, err = run(store, **given)
     assert code == 1
     assert out == ""
     assert PASSWORD not in err
+    assert (str(store) in err) is names_store
     return err
 
 
@@ -287,6 +288,13 @@ def test_a_missing_storage_directory_is_an_error_not_a_traceback(tmp_path):
 
     assert "cannot write" in error
     assert PASSWORD not in error
+
+
+def test_a_file_in_the_storage_path_is_an_error_not_a_traceback(tmp_path):
+    (tmp_path / "file").write_text("")
+    store = tmp_path / "file" / "byoc.json"
+
+    assert "cannot read" in failure(store)
 
 
 def test_a_failed_write_leaves_no_temporary_file(store, monkeypatch):
@@ -434,10 +442,13 @@ def test_task_runs_the_script_with_the_parameters_on_stdin(check_mode):
         "password": PASSWORD,
     }
     # A number from a YAML file (not SRC's strings) still reaches the helper as a string.
-    assert json.loads(resolve_text(command["stdin"], pulsar_amqp_password=1234567890)) == {
-        "name": "hpc",
-        "password": "1234567890",
-    }
+    assert json.loads(
+        resolve_text(command["stdin"], pulsar_amqp_name=123, pulsar_amqp_password=1234567890)
+    ) == {"name": "123", "password": "1234567890"}
+    # A null (not SRC's empty string) means a generated value, as for the filter.
+    assert json.loads(
+        resolve_text(command["stdin"], pulsar_amqp_name=None, pulsar_amqp_password=None)
+    ) == {"name": "", "password": ""}
     # The password passes through this task: nothing of it is logged, also when it fails.
     assert task["no_log"] is True
     assert task["check_mode"] is False

@@ -12,7 +12,8 @@ takes this component's parameters (pulsar_*, as SRC passes them; the name and pa
 be the ones the deployment used) from PARAMS_YML, derives the form and the names from them
 with the playbook's own variables and prints the JSON that tests/e2e/galaxy_job.py takes:
 the runner's parameters (with the password in ``amqp_url``, as in Galaxy's job_conf.yml) and
-the destination's.
+the destination's. tests/test_byoc_contract.py renders the same templates through this
+module to compare app.yml with the runner.
 """
 
 import argparse
@@ -77,7 +78,7 @@ def galaxy_job_config(params, galaxy_url):
 
 
 def byoc_request(form):
-    """byoc-sync's ``req`` (a validated ByocRequest without the password) for the form."""
+    """byoc-sync's ``req`` for the form: a ByocRequest's fields except name and password."""
     return {
         "max_cores": form["max_accepted_cores"],
         "max_mem": form["max_accepted_mem"],
@@ -88,7 +89,10 @@ def byoc_request(form):
 
 
 def galaxy_runner(amqp, form, galaxy_url=SITE["site"]["galaxy_url"]):
-    """Galaxy's runner entry for this Pulsar, from byoc-sync's runner.yml.j2."""
+    """Galaxy's runner entry for this Pulsar, from byoc-sync's runner.yml.j2.
+
+    ``galaxy_url`` defaults to usegalaxy.eu's, for the contract tests.
+    """
     names = byoc_names(amqp["name"])
     site = {"mq_host": amqp["host"], "mq_port": amqp["port"], "galaxy_url": galaxy_url}
     text = render_byoc_template("runner.yml.j2", names=names, site=site, req=byoc_request(form))

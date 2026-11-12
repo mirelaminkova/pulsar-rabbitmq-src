@@ -135,6 +135,25 @@ def test_unknown_host():
     )
 
 
+EU = {"pulsar_galaxy_fqdn": "usegalaxy.eu", "pulsar_amqp_host": "mq.galaxyproject.eu"}
+
+
+def test_unknown_host_names_the_broker_host_parameter():
+    error = socket.gaierror(-2, "Name or service not known")
+
+    result = run_check(connect_error=error, conf=app_yml(EU))
+
+    assert_result(result, check_amqp.FAILED, "mq.galaxyproject.eu", "pulsar_amqp_host")
+    assert "usegalaxy.eu" not in result[1]
+
+
+def test_messages_show_the_broker_not_the_galaxy_host():
+    result = run_check(FakeChannel(result=1), conf=app_yml(EU))
+
+    assert_result(result, check_amqp.OK, "mq.galaxyproject.eu:5671")
+    assert "usegalaxy.eu" not in result[1]
+
+
 def test_temporary_dns_failure_is_retried():
     error = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
     assert_result(run_check(connect_error=error), check_amqp.RETRY, "galaxy.example.org")
@@ -299,14 +318,17 @@ def tls_check(tmp_path, ca):
     """Real handshakes through Pulsar's connection code, with our app.yml TLS settings."""
     servers = []
 
-    def check(cert_name, ca_certs=None):
+    def check(cert_name, ca_certs=None, params=None):
         server = TlsServer(tmp_path, cert_name, *ca)
         servers.append(server)
         # Connect to the local server; the TLS settings stay as rendered, so the
-        # hostname checked is still pulsar_galaxy_fqdn (galaxy.example.org).
+        # hostname checked is still the broker's (pulsar_galaxy_fqdn, galaxy.example.org,
+        # unless params set pulsar_amqp_host).
         url = f"pyamqp://hpc:{PASSWORD}@127.0.0.1:{server.port}//pulsar/hpc"
         conf = app_yml(
-            message_queue_url=url, amqp_connect_ssl_ca_certs=ca_certs or str(tmp_path / "ca.pem")
+            params,
+            message_queue_url=url,
+            amqp_connect_ssl_ca_certs=ca_certs or str(tmp_path / "ca.pem"),
         )
         return check_amqp.check(conf)
 
@@ -329,6 +351,23 @@ def test_certificate_for_another_host_is_rejected(tls_check):
     assert code == check_amqp.FAILED, message
     assert "certificate" in message
     assert "galaxy.example.org" in message
+
+
+def test_certificate_for_the_broker_host_passes_tls(tls_check):
+    code, message = tls_check("mq.galaxyproject.eu", params=EU)
+
+    assert code == check_amqp.RETRY, message
+    assert "certificate" not in message
+
+
+def test_certificate_for_the_galaxy_host_is_rejected_with_a_separate_broker(tls_check):
+    # With pulsar_amqp_host, Galaxy's own name is no longer the one verified.
+    code, message = tls_check("usegalaxy.eu", params=EU)
+
+    assert code == check_amqp.FAILED, message
+    assert "certificate" in message
+    assert "mq.galaxyproject.eu" in message
+    assert "pulsar_amqp_host" in message
 
 
 def test_untrusted_certificate_is_rejected(tls_check):

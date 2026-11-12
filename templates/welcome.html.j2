@@ -72,8 +72,8 @@
       <h2>About</h2>
       <ul>
         <li><strong>Workspace FQDN:</strong> {{ (workspace_fqdn | default(ansible_facts['fqdn'], true)) | e }}</li>
-        <li><strong>Galaxy broker:</strong> <code>amqps://{{ a.galaxy_fqdn | e }}:{{ a.port | e }}</code>, RabbitMQ user <code>{{ a.name | e }}</code>, vhost <code>{{ a.vhost | e }}</code></li>
-        <li><strong>TLS:</strong> Galaxy's certificate and its hostname <code>{{ a.galaxy_fqdn | e }}</code> are verified against <code>{{ pulsar_amqp_ca_certs | e }}</code></li>
+        <li><strong>Broker:</strong> <code>amqps://{{ a.host | e }}:{{ a.port | e }}</code>, RabbitMQ user <code>{{ a.name | e }}</code>, vhost <code>{{ a.vhost | e }}</code>{% if a.host != a.galaxy_fqdn %} (<code>pulsar_amqp_host</code>: a separate broker host; Galaxy is <code>{{ a.galaxy_fqdn | e }}</code>){% endif %}</li>
+        <li><strong>TLS:</strong> the broker's certificate and its hostname <code>{{ a.host | e }}</code> are verified against <code>{{ pulsar_amqp_ca_certs | e }}</code></li>
 {% if _pulsar_slurm | bool %}
         <li><strong>Manager:</strong> <code>{{ a.manager | e }}</code>; jobs run through Slurm on this workspace (Pulsar's <code>queued_drmaa</code> manager), which has {{ _pulsar_slurm_cpus | e }} CPUs and {{ _pulsar_slurm_memory_mb | e }} MB for jobs</li>
 {% else %}
@@ -86,13 +86,16 @@
 
     <section>
       <h2>How Galaxy and Pulsar connect</h2>
-      <p>Galaxy runs RabbitMQ (component parameter <code>src_galaxy_rabbitmq: true</code>). Pulsar connects <em>to</em> it, so this workspace needs no open inbound port. Pulsar fetches inputs from and uploads outputs to Galaxy's HTTPS URL directly.</p>
-<div class="flow">Pulsar ({{ (workspace_fqdn | default(ansible_facts['fqdn'], true)) | e }}) ──AMQPS──▶ RabbitMQ on {{ a.galaxy_fqdn | e }}:{{ a.port | e }}  vhost {{ a.vhost | e }}
+      <p>{% if a.host == a.galaxy_fqdn %}Galaxy runs RabbitMQ (component parameter <code>src_galaxy_rabbitmq: true</code>).{% else %}Galaxy's RabbitMQ runs on <code>{{ a.host | e }}</code>, not on the Galaxy workspace (as in usegalaxy.eu's Pulsar Network).{% endif %} Pulsar connects <em>to</em> it, so this workspace needs no open inbound port. Pulsar fetches inputs from and uploads outputs to Galaxy's HTTPS URL directly.</p>
+<div class="flow">Pulsar ({{ (workspace_fqdn | default(ansible_facts['fqdn'], true)) | e }}) ──AMQPS──▶ RabbitMQ on {{ a.host | e }}:{{ a.port | e }}  vhost {{ a.vhost | e }}
 Pulsar ──────────── HTTPS for input/output files ───────────▶ https://{{ a.galaxy_fqdn | e }}/api/</div>
     </section>
 
     <section>
       <h2>Connect the Galaxy workspace</h2>
+{% if a.host != a.galaxy_fqdn %}
+      <p>If this Galaxy is not the SRC Galaxy component (usegalaxy.eu configures its runner for user <code>{{ a.name | e }}</code> itself), skip this section: the entry below then only documents this Pulsar.</p>
+{% endif %}
       <p>The Galaxy workspace <code>{{ a.galaxy_fqdn | e }}</code> must have this Pulsar in its <strong><code>src_galaxy_pulsar_amqp_configs</code></strong> parameter. If you created Galaxy with these values already, nothing needs to change; otherwise paste this <strong>entire line</strong> there (or add the <code>{...}</code> part to an existing list) and rerun the Galaxy component:</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('galaxy-amqp-param', this)">Copy</button>

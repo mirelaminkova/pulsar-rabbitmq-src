@@ -66,6 +66,7 @@ def test_component_parameters_map_onto_galaxy():
 
     for name in (
         "pulsar_galaxy_fqdn",
+        "pulsar_amqp_host",
         "pulsar_amqp_port",
         "pulsar_amqp_name",
         "pulsar_amqp_password",
@@ -74,6 +75,7 @@ def test_component_parameters_map_onto_galaxy():
         "pulsar_cvmfs",
         "pulsar_docker",
         "pulsar_apptainer",
+        "pulsar_amqp_ack_republish_time",
     ):
         assert name in parameters
     assert parameters["pulsar_amqp_password"] == ""
@@ -258,6 +260,28 @@ def test_welcome_page_shows_the_galaxy_entry():
     assert "src_galaxy_rabbitmq" in page
     # Galaxy's preferences list the entry by its label, which defaults to the name.
     assert "choosing <code>hpc</code>" in page
+
+
+def test_welcome_page_shows_the_galaxy_host_as_the_broker():
+    page = render("welcome.html.j2")
+
+    assert "amqps://galaxy.example.org:5671" in page
+    assert "Galaxy runs RabbitMQ" in page
+    assert "pulsar_amqp_host" not in page
+
+
+def test_welcome_page_shows_a_separate_broker_host():
+    page = render(
+        "welcome.html.j2", pulsar_galaxy_fqdn="usegalaxy.eu", pulsar_amqp_host="mq.galaxyproject.eu"
+    )
+
+    assert "amqps://mq.galaxyproject.eu:5671" in page
+    assert "amqps://usegalaxy.eu" not in page
+    assert "RabbitMQ on mq.galaxyproject.eu:5671" in page
+    assert "Galaxy runs RabbitMQ" not in page
+    assert "skip this section" in page
+    # Galaxy's own name still identifies it and its entry.
+    assert "<code>usegalaxy.eu</code> must have this Pulsar" in page
 
 
 def test_welcome_page_does_not_claim_a_check_that_may_have_failed():

@@ -66,6 +66,145 @@ def test_values_are_trimmed():
     assert result["name"] == "hpc"
 
 
+# The broker host: Galaxy's host unless pulsar_amqp_host says otherwise.
+
+
+@pytest.mark.parametrize("value", ["", "  ", None])
+def test_broker_host_defaults_to_the_galaxy_host(value):
+    result = settings(host=value)
+
+    assert result["host"] == result["galaxy_fqdn"] == "galaxy.example.org"
+    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
+    assert pulsar_amqp_errors(result) == []
+
+
+def test_explicit_broker_host_is_used_in_the_url():
+    result = settings(host=" MQ.GalaxyProject.eu ")
+
+    assert result["host"] == "mq.galaxyproject.eu"
+    assert result["galaxy_fqdn"] == "galaxy.example.org"
+    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/hpc"
+    assert pulsar_amqp_errors(result) == []
+
+
+def test_usegalaxy_eu_pulsar_network():
+    # usegalaxy.eu's runner URL is pyamqp://galaxy_<id>:<pw>@mq.galaxyproject.eu:5671
+    # //pulsar/galaxy_<id>?ssl=1 (infrastructure-playbook, job_conf.yml); our TLS
+    # settings replace ?ssl=1. Its runner uses manager production.
+    result = settings(
+        galaxy_fqdn="usegalaxy.eu",
+        host="mq.galaxyproject.eu",
+        name="galaxy_42",
+        manager="production",
+    )
+
+    assert result["url"] == (
+        f"pyamqp://galaxy_42:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/galaxy_42"
+    )
+    assert result["vhost"] == "/pulsar/galaxy_42"
+    assert result["setup_queue"] == "pulsar_production__setup"
+    assert pulsar_amqp_errors(result) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://mq.galaxyproject.eu",
+        "mq.galaxyproject.eu/",
+        "mq",
+        "mq.galaxyproject.eu:5671",
+        "-x.galaxyproject.eu",
+        "a b.galaxyproject.eu",
+    ],
+)
+def test_broker_host_must_be_a_hostname(value):
+    errors = pulsar_amqp_errors(settings(host=value))
+
+    assert len(errors) == 1, errors
+    assert "pulsar_amqp_host" in errors[0]
+    assert "pulsar_galaxy_fqdn" not in errors[0]
+    assert PASSWORD.lower() not in errors[0].lower()
+
+
+# The README shows usegalaxy.eu's runner URL; pasted into a field, it holds the password.
+RUNNER_URL = f"pyamqp://galaxy_42:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/galaxy_42?ssl=1"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        RUNNER_URL,
+        RUNNER_URL.replace("@", "%40"),
+        f"galaxy_42:{PASSWORD}",
+        PASSWORD,  # the password in the wrong field
+        f"mq.galaxyproject.eu\n{PASSWORD}",
+    ],
+    ids=["url", "url-percent-encoded", "login", "password", "newline"],
+)
+@pytest.mark.parametrize(
+    "key",
+    ["host", "galaxy_fqdn", "port", "name", "manager", "storage_path", "job_runner", "cvmfs"],
+)
+def test_a_pasted_password_is_never_echoed(key, value):
+    errors = pulsar_amqp_errors(settings(**{key: value}))
+
+    assert len(errors) == 1, errors
+    assert "the password" in errors[0]
+    assert PASSWORD.lower() not in errors[0].lower()
+
+
+def test_a_pasted_url_is_never_echoed_as_the_republish_time():
+    errors = pulsar_amqp_errors(settings(ack_republish_time=RUNNER_URL))
+
+    assert len(errors) == 1, errors
+    assert PASSWORD.lower() not in errors[0].lower()
+    assert "galaxy_42" not in errors[0]
+
+
+@pytest.mark.parametrize("key", ["port", "ack_republish_time"])
+def test_a_huge_number_is_an_error_not_a_crash(key):
+    # int() refuses more than 4300 digits (Python 3.11+); the filter must not.
+    errors = pulsar_amqp_errors(settings(**{key: "9" * 5000}))
+
+    assert len(errors) == 1, errors
+
+
+def test_an_invalid_galaxy_host_is_reported_once_when_it_is_the_broker_host():
+    errors = pulsar_amqp_errors(settings(galaxy_fqdn="galaxy", host=""))
+
+    assert len(errors) == 1, errors
+    assert "pulsar_galaxy_fqdn" in errors[0]
+
+
+# amqp_ack_republish_time: 1200 s in our Galaxy component, 300 s in usegalaxy.eu's runner.
+
+
+@pytest.mark.parametrize("value", ["", None, "1200"])
+def test_ack_republish_time_defaults_to_galaxys(value):
+    result = settings(ack_republish_time=value)
+
+    assert result["ack_republish_time"] == 1200
+    assert pulsar_amqp_errors(result) == []
+
+
+def test_ack_republish_time_can_be_usegalaxy_eus():
+    result = settings(ack_republish_time=" 300 ")
+
+    assert result["ack_republish_time"] == 300
+    assert pulsar_amqp_errors(result) == []
+
+
+@pytest.mark.parametrize(
+    "value", ["0", "-300", "300.5", "5m", "1e3", "\u00b2", "\uff13\uff10\uff10"]
+)
+def test_ack_republish_time_must_be_a_positive_number_of_seconds(value):
+    errors = pulsar_amqp_errors(settings(ack_republish_time=value))
+
+    assert len(errors) == 1, errors
+    assert "pulsar_amqp_ack_republish_time" in errors[0]
+    assert value in errors[0]
+
+
 # Validation
 
 
@@ -111,6 +250,12 @@ def test_invalid_port(value):
 
 def test_port():
     assert pulsar_amqp_errors(settings(port="15671")) == []
+
+
+@pytest.mark.parametrize("value", ["\u00b2", "\uff15\uff16\uff17\uff11"])
+def test_only_ascii_digits_make_a_port(value):
+    # str.isdigit() accepts a superscript, which int() refuses, and fullwidth digits.
+    assert_invalid("pulsar_amqp_port", port=value)
 
 
 @pytest.mark.parametrize(
@@ -248,6 +393,25 @@ def test_group_vars_build_the_settings_from_the_component_parameters():
     assert result["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
     assert result["jobs_directory"] == "/data/pulsar_storage/pulsar/staging"
     assert resolve("_pulsar_amqp_errors") == []
+
+
+def test_group_vars_pass_the_broker_host_and_republish_time():
+    result = resolve(
+        "_pulsar_amqp", pulsar_amqp_host="mq.galaxyproject.eu", pulsar_amqp_ack_republish_time="300"
+    )
+
+    assert result["host"] == "mq.galaxyproject.eu"
+    assert result["galaxy_fqdn"] == "galaxy.example.org"
+    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/hpc"
+    assert result["ack_republish_time"] == 300
+    assert resolve("_pulsar_amqp_errors", pulsar_amqp_host="mq.galaxyproject.eu") == []
+
+
+def test_group_vars_report_an_invalid_broker_host():
+    errors = resolve("_pulsar_amqp_errors", pulsar_amqp_host="https://mq.galaxyproject.eu")
+
+    assert len(errors) == 1, errors
+    assert "pulsar_amqp_host" in errors[0]
 
 
 def test_group_vars_report_missing_parameters():

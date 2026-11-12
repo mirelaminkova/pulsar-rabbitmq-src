@@ -9,7 +9,7 @@ import ssl
 import pytest
 from pulsar.messaging import bind_amqp
 
-from tests.helpers import PASSWORD, render_yaml, resolve
+from tests.helpers import PASSWORD, render, render_yaml, resolve
 
 
 def connection(app_yml, manager="_default_"):
@@ -41,6 +41,30 @@ def test_tls_verifies_certificate_and_hostname():
     }
 
 
+def test_a_separate_broker_host_is_connected_to_and_verified():
+    # usegalaxy.eu's Pulsar Network: the broker is not the Galaxy host.
+    app_yml = render_yaml(
+        "pulsar-app.yml.j2",
+        pulsar_galaxy_fqdn="usegalaxy.eu",
+        pulsar_amqp_host="mq.galaxyproject.eu",
+    )
+
+    _, conn = connection(app_yml)
+
+    assert conn.hostname == "mq.galaxyproject.eu"
+    assert conn.ssl["server_hostname"] == "mq.galaxyproject.eu"
+    assert conn.ssl["cert_reqs"] == ssl.CERT_REQUIRED
+    assert "usegalaxy.eu" not in app_yml["message_queue_url"]
+
+
+def test_app_yml_is_the_same_with_and_without_an_empty_broker_host():
+    # Existing catalog items (no pulsar_amqp_host) get the app.yml they had.
+    assert render("pulsar-app.yml.j2", pulsar_amqp_host="") == render("pulsar-app.yml.j2")
+    assert render("pulsar-app.yml.j2", pulsar_amqp_host="galaxy.example.org") == render(
+        "pulsar-app.yml.j2"
+    )
+
+
 def test_ssl_query_would_discard_the_tls_settings():
     # Why message_queue_url has no ?ssl=1: kombu lets the URL's ssl replace the
     # ssl dict Pulsar builds from amqp_connect_ssl_*, so nothing would be verified.
@@ -58,6 +82,15 @@ def test_acknowledgement_and_publish_retries():
     assert exchange._PulsarExchange__republish_time == 1200
     assert exchange._PulsarExchange__publish_kwds["retry"]
     assert exchange._PulsarExchange__publish_kwds["retry_policy"]["max_retries"] == 60
+
+
+def test_republish_time_follows_the_parameter():
+    # usegalaxy.eu's runner republishes after 300 s, the Galaxy component's after 1200 s.
+    app_yml = render_yaml("pulsar-app.yml.j2", pulsar_amqp_ack_republish_time="300")
+    exchange, _ = connection(app_yml)
+
+    assert app_yml["amqp_ack_republish_time"] == 300
+    assert exchange._PulsarExchange__republish_time == 300
 
 
 @pytest.mark.parametrize("manager", ["_default_", "gpu"])

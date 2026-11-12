@@ -19,14 +19,18 @@ GALAXY_CONTRACT = REPO / "tests" / "galaxy_contract"
 
 add_all_plugin_dirs(str(REPO))
 
-# Facts the variables and templates use, as on an SRC Ubuntu workspace.
+# Facts the variables and templates use (through ansible_facts), as on an SRC Ubuntu workspace.
 FACTS = {
-    "ansible_fqdn": "pulsar.example.org",
-    "ansible_hostname": "pulsar",
-    "ansible_processor_vcpus": 4,
-    "ansible_memtotal_mb": 16000,
-    "ansible_distribution": "Ubuntu",
-    "ansible_distribution_version": "24.04",
+    "ansible_facts": {
+        "fqdn": "pulsar.example.org",
+        "hostname": "pulsar",
+        "processor_vcpus": 4,
+        "memtotal_mb": 16000,
+        "architecture": "x86_64",
+        "distribution": "Ubuntu",
+        "distribution_version": "24.04",
+        "distribution_release": "noble",
+    },
     "inventory_hostname": "localhost",
     "workspace_fqdn": "pulsar.example.org",
     # Ansible's placeholder for a left-out module argument (always defined).
@@ -45,6 +49,11 @@ PARAMS = {
     "pulsar_cvmfs": "true",
     "pulsar_job_runner": "slurm",
 }
+
+
+def facts(**overrides):
+    """``ansible_facts`` of FACTS with ``overrides``, as a parameter of templar() and friends."""
+    return {"ansible_facts": {**FACTS["ansible_facts"], **overrides}}
 
 
 def templar(**params):

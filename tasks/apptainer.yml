@@ -15,7 +15,7 @@
 
 - name: Add Apptainer apt repository
   ansible.builtin.apt_repository:
-    repo: deb [signed-by={{ apptainer_key_location }}] {{ apptainer_repo_url }} {{ ansible_distribution_release }} main
+    repo: deb [signed-by={{ apptainer_key_location }}] {{ apptainer_repo_url }} {{ ansible_facts['distribution_release'] }} main
     state: present
     filename: apptainer
     update_cache: true

@@ -1,4 +1,6 @@
-# Molecule with its Docker driver, for molecule/default (CI's molecule job). Install next to
-# requirements-dev.txt: the scenario's verify step renders Galaxy's job configuration with it.
+# Molecule with its Docker driver, for molecule/default (CI's molecule job), with the playbook's
+# Ansible. The verify step renders Galaxy's job configuration with requirements-dev.txt: install
+# both together for ansible-core 2.18, or requirements-dev.txt into a separate virtualenv named
+# by MOLECULE_TESTS_PYTHON for SRC's ansible==14.6.0 (see README.md).
 molecule~=26.11.0
 molecule-plugins[docker]~=26.11.0

@@ -7,8 +7,10 @@ import pytest
 
 from tests.galaxy_contract import src_galaxy
 from tests.helpers import (
+    FACTS,
     PASSWORD,
     REPO,
+    facts,
     load_yaml,
     play,
     render,
@@ -152,6 +154,24 @@ def test_app_yml_is_readable_by_pulsar_only():
     )
 
 
+@pytest.mark.parametrize(("docker", "groups"), [("true", ["docker"]), ("false", None)])
+def test_pulsar_user_joins_docker_only_with_docker(docker, groups):
+    # ansible-core 2.20's user module refuses append without groups (SRC runs 2.21).
+    user = task_named(tasks("tasks/pulsar.yml"), "Create the Pulsar system user")[
+        "ansible.builtin.user"
+    ]
+    omit = FACTS["omit"]
+    arguments = {
+        key: resolve_text(value, pulsar_docker=docker) if isinstance(value, str) else value
+        for key, value in user.items()
+    }
+    arguments = {key: value for key, value in arguments.items() if value != omit}
+
+    assert arguments.get("groups") == groups
+    assert ("append" in arguments) is (groups is not None)
+    assert arguments.get("append", True) in (True, "True", "true")
+
+
 def test_pulsar_installed_with_amqp_support():
     task = task_named(
         tasks("tasks/pulsar.yml"), "Install pulsar-app with AMQP support into the venv"
@@ -246,7 +266,7 @@ def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
 
 
 def test_welcome_page_escapes_values():
-    page = render("welcome.html.j2", ansible_hostname="<b>x</b>")
+    page = render("welcome.html.j2", **facts(hostname="<b>x</b>"))
     assert "<b>x</b>" not in page
 
 

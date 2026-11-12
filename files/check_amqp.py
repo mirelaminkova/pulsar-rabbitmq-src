@@ -11,9 +11,11 @@ connection code, and passively declares the queue Galaxy sends new jobs to. A
 consumer on it means Pulsar is logged in and waiting for jobs; the Galaxy broker
 has no management API that Pulsar's user could ask instead.
 
-Exit status: 0 consuming, 1 failed (fix the configuration), 75 not yet (retry;
-EX_TEMPFAIL, unlike 2, which Python itself returns when it cannot run a script).
-Prints one line and never the password.
+Exit status: 0 connected (consuming), 3 waiting (the login or the vhost is refused:
+byoc-sync creates the BYOC account only once its pull request is merged and deployed),
+75 not yet (retry; EX_TEMPFAIL, unlike 2, which Python itself returns when it cannot run
+a script), 1 failed (fix the configuration). The playbook records these as the states
+connected, waiting and error of byoc-state.json. Prints one line and never the password.
 
 A consumer may also be a stale connection of an earlier Pulsar with the same name
 and password (until its heartbeat expires); give each Pulsar its own name.
@@ -28,7 +30,7 @@ import yaml
 from amqp import exceptions as amqp_exceptions
 from pulsar.messaging import bind_amqp
 
-OK, FAILED, RETRY = 0, 1, 75
+OK, FAILED, WAITING, RETRY = 0, 1, 3, 75
 # Only the settings needed to connect: with persistence_directory and amqp_acknowledge
 # Pulsar's exchange would create acknowledgement stores, here as root.
 CONNECT_PREFIXES = ("amqp_connect_ssl_", "amqp_key_prefix")
@@ -98,16 +100,17 @@ def explain(error, where):
     if isinstance(error, socket.gaierror):
         return FAILED, f"Cannot resolve {where['host']}: check pulsar_amqp_host."
     if isinstance(error, amqp_exceptions.AccessRefused):
-        return FAILED, (
-            "RabbitMQ on {address} refused the login of user {user}: this Pulsar's name and "
-            "password (pulsar_amqp_name and pulsar_amqp_password, or the generated ones on the "
-            "welcome page) must be the ones entered in " + FORM + ", and byoc-sync's pull "
-            "request for them must have been merged and deployed."
+        return WAITING, (
+            "RabbitMQ on {address} refused the login of user {user}: waiting for byoc-sync's "
+            "pull request to be merged and deployed by the Galaxy admins; this Pulsar's name "
+            "and password (pulsar_amqp_name and pulsar_amqp_password, or the generated ones on "
+            "the welcome page) must be the ones entered in " + FORM + "."
         ).format(**where)
     if isinstance(error, amqp_exceptions.NotAllowed):
-        return FAILED, (
-            "User {user} may not use vhost {vhost} on {address}: byoc-sync creates both from "
-            "the username in " + FORM + "; check pulsar_amqp_name against it."
+        return WAITING, (
+            "User {user} may not use vhost {vhost} on {address} yet: byoc-sync creates both "
+            "from the username in " + FORM + " once its pull request is merged and deployed; "
+            "check pulsar_amqp_name against it."
         ).format(**where)
     if isinstance(error, amqp_exceptions.NotFound):
         return RETRY, (

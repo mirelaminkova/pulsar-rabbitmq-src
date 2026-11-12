@@ -109,21 +109,51 @@ def test_missing_queue_is_retried():
     assert_result(run_check(FakeChannel(error=error)), check_amqp.RETRY, "journalctl -u pulsar")
 
 
-def test_login_refused():
+def test_exit_statuses_are_the_playbook_contract():
+    # 0 connected, 75 not yet (retried), 3 waiting for the BYOC account, 1 an error: the
+    # playbook maps them to the states of byoc-state.json and fails only for an error.
+    assert (check_amqp.OK, check_amqp.RETRY, check_amqp.WAITING, check_amqp.FAILED) == (0, 75, 3, 1)
+
+
+def test_login_refused_is_waiting_for_the_account():
+    # Normal at deployment: byoc-sync creates the user only once its pull request is merged.
     error = amqp_exceptions.AccessRefused(f"ACCESS_REFUSED - Login was refused {PASSWORD}")
     assert_result(
         run_check(connect_error=error),
-        check_amqp.FAILED,
+        check_amqp.WAITING,
         MQ_USER,
         "pulsar_amqp_name",
         "pulsar_amqp_password",
         "byoc_pulsar",
+        "merged",
     )
 
 
-def test_vhost_not_allowed():
+def test_vhost_not_allowed_is_waiting_for_the_vhost():
     error = amqp_exceptions.NotAllowed(f"NOT_ALLOWED - access to vhost '{VHOST}' refused")
-    assert_result(run_check(connect_error=error), check_amqp.FAILED, VHOST, MQ_USER, "byoc_pulsar")
+    assert_result(run_check(connect_error=error), check_amqp.WAITING, VHOST, MQ_USER, "byoc_pulsar")
+
+
+def test_waiting_exits_3_from_the_script(tmp_path, monkeypatch, capsys):
+    # As the playbook runs it: 3 is "waiting", recorded and not retried, not a failure.
+    path = tmp_path / "app.yml"
+    path.write_text(render("pulsar-app.yml.j2"))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(path)])
+    error = amqp_exceptions.AccessRefused("ACCESS_REFUSED - Login was refused")
+    connection = mock.MagicMock()
+    connection.__enter__.return_value = connection
+    connection.connect.side_effect = error
+
+    exchange = mock.MagicMock()
+    exchange.connection.return_value = connection
+    exchange._PulsarExchange__queue_name.return_value = "q"
+
+    patched = mock.patch.object(check_amqp.bind_amqp, "get_exchange", return_value=exchange)
+    with patched, pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(SCRIPT), run_name="__main__")
+
+    assert exit_info.value.code == 3
+    assert "refused the login" in capsys.readouterr().out
 
 
 def test_unknown_host():

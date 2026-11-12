@@ -88,16 +88,16 @@
           ansible.builtin.include_role:
             name: uusrc.general.nginx_reverse_proxy
 
-    # Before Pulsar, whose queued_drmaa manager needs Slurm and its DRMAA library.
-    - name: Run Pulsar's jobs through Slurm on this workspace
-      ansible.builtin.include_tasks: tasks/slurm.yml
-      when: _pulsar_slurm | bool
-
     # The welcome page is written once per run, after the broker check recorded the
-    # connection state (_pulsar_byoc_state), and also when the installation or the check
-    # failed: the BYOC form is then still available.
+    # connection state (_pulsar_byoc_state), and also when Slurm, the installation or the
+    # check failed: the BYOC form is then still available.
     - name: Install Pulsar and publish the welcome page with its connection state
       block:
+        # Before Pulsar, whose queued_drmaa manager needs Slurm and its DRMAA library.
+        - name: Run Pulsar's jobs through Slurm on this workspace
+          ansible.builtin.include_tasks: tasks/slurm.yml
+          when: _pulsar_slurm | bool
+
         - name: Install Pulsar and connect it to Galaxy's RabbitMQ
           ansible.builtin.include_tasks: tasks/pulsar.yml
       always:

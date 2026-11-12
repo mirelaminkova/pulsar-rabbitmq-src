@@ -8,7 +8,8 @@ AMQP error, such as the refused login while the BYOC account does not exist yet
 pulsar-main sleeps on without consumers, so Pulsar would never connect by itself once
 the account exists. This launcher exits with status 1 instead, and the unit's
 Restart=always starts Pulsar again every RestartSec until it connects.
-Prints the thread's name and the error's type, never its text (it could hold the URL).
+Prints the thread's name (Pulsar's: the queue and the URL with the password masked) and
+the error's type, never the error's text.
 """
 
 import _thread
@@ -18,6 +19,9 @@ import threading
 import pulsar.main
 
 CONSUMER_PREFIX = "consume-"  # pulsar.messaging.bind_amqp's thread names
+# The consumer's own heartbeat thread (pulsar.client.amqp_exchange): its errors are the
+# connection's, which the consumer recovers from by reconnecting.
+HEARTBEAT_PREFIX = "consume-heartbeat-"
 EXIT_CONSUMER_DIED = 1
 
 dead = []
@@ -26,7 +30,7 @@ dead = []
 def consumer_died(args):
     """threading.excepthook: interrupt pulsar-main's loop when a consumer thread dies."""
     name = getattr(args.thread, "name", "")
-    if not name.startswith(CONSUMER_PREFIX):
+    if not name.startswith(CONSUMER_PREFIX) or name.startswith(HEARTBEAT_PREFIX):
         threading.__excepthook__(args)  # as without this launcher
         return
     # Pulsar has logged the exception itself ("consumer quitting in problematic fashion").

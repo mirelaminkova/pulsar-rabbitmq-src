@@ -348,6 +348,7 @@
 # A broker that cannot be reached is an error: the deployment fails with the check's message
 # and records "error". Run from the controller, as an imported play could not be allowed to
 # fail. An unresolvable host: a dropped connection would be retried for two minutes first.
+# The last play: it leaves Pulsar deployed against that host.
 - name: Deploy against an unreachable broker host
   hosts: pulsar_workspace
   gather_facts: false

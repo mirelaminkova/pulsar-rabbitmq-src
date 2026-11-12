@@ -280,7 +280,7 @@ def test_slurm_conf_as_the_role_writes_it(docker, ubuntu):
 
 def test_slurm_is_set_up_before_pulsar_and_stopped_for_local():
     names = [t.get("name") for t in tasks(play()["tasks"])]
-    slurm = task_named(play()["tasks"], "Run Pulsar's jobs through Slurm on this workspace")
+    slurm = task_named(tasks(play()["tasks"]), "Run Pulsar's jobs through Slurm on this workspace")
     off = task_named(play()["tasks"], "Stop Slurm when Pulsar runs jobs itself")
     pulsar = "Install Pulsar and connect it to Galaxy's RabbitMQ"
 

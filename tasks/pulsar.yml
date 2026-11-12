@@ -229,6 +229,9 @@
   delay: 5
   changed_when: false
   failed_when: false
+  # Exhausted retries fail the task regardless of failed_when: the outcome below then
+  # records the error and fails with the check's message instead.
+  ignore_errors: true
   # CI's live Slurm check has no Galaxy broker and skips the check and its outcome.
   tags: [broker-check]
 

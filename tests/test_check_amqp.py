@@ -134,26 +134,14 @@ def test_vhost_not_allowed_is_waiting_for_the_vhost():
     assert_result(run_check(connect_error=error), check_amqp.WAITING, VHOST, MQ_USER, "byoc_pulsar")
 
 
-def test_waiting_exits_3_from_the_script(tmp_path, monkeypatch, capsys):
+def test_waiting_exits_3_from_the_script(tmp_path, capsys):
     # As the playbook runs it: 3 is "waiting", recorded and not retried, not a failure.
     path = tmp_path / "app.yml"
     path.write_text(render("pulsar-app.yml.j2"))
-    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(path)])
-    error = amqp_exceptions.AccessRefused("ACCESS_REFUSED - Login was refused")
-    connection = mock.MagicMock()
-    connection.__enter__.return_value = connection
-    connection.connect.side_effect = error
-
-    exchange = mock.MagicMock()
-    exchange.connection.return_value = connection
-    exchange._PulsarExchange__queue_name.return_value = "q"
-
-    patched = mock.patch.object(check_amqp.bind_amqp, "get_exchange", return_value=exchange)
-    with patched, pytest.raises(SystemExit) as exit_info:
-        runpy.run_path(str(SCRIPT), run_name="__main__")
-
-    assert exit_info.value.code == 3
-    assert "refused the login" in capsys.readouterr().out
+    waiting = (check_amqp.WAITING, "refused the login")
+    with mock.patch.object(check_amqp, "check", return_value=waiting):
+        assert check_amqp.main([str(path)]) == 3
+    assert capsys.readouterr().out == "refused the login\n"
 
 
 def test_unknown_host():

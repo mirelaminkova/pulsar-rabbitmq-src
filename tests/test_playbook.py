@@ -200,6 +200,8 @@ def test_connection_check_after_restart_records_the_state():
     assert argv[1:] == ["{{ pulsar_check_script }}", "{{ pulsar_config_dir }}/app.yml"]
     assert check["until"] == "_pulsar_amqp_check.rc != 75"  # check_amqp.RETRY
     assert check["failed_when"] is False
+    # Exhausted retries (an unreachable broker) fail the task despite failed_when.
+    assert check["ignore_errors"] is True
     # The outcome's tasks are skipped with the check (CI's Slurm live check, check mode).
     assert outcome["tags"] == check["tags"] == ["broker-check"]
     assert outcome["when"] == "_pulsar_amqp_check.rc is defined"
@@ -303,10 +305,13 @@ def test_state_is_unknown_until_the_check_ran():
 def test_welcome_page_is_templated_after_the_state_and_also_on_failure():
     play_tasks = play()["tasks"]
     [install] = [t for t in play_tasks if "always" in t]
-    [include] = install["block"]
     [template] = [t for t in install["always"] if "ansible.builtin.template" in t]
 
-    assert include["ansible.builtin.include_tasks"] == "tasks/pulsar.yml"
+    # Slurm and Pulsar: a failure in either still leaves the page.
+    assert [t["ansible.builtin.include_tasks"] for t in install["block"]] == [
+        "tasks/slurm.yml",
+        "tasks/pulsar.yml",
+    ]
     assert template["ansible.builtin.template"]["src"] == "templates/welcome.html.j2"
     assert template["ansible.builtin.template"]["dest"] == "{{ pulsar_welcome_dir }}/index.html"
     assert template["when"] == "pulsar_configure_src_proxy | bool"

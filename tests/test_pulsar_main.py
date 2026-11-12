@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 from amqp import exceptions as amqp_exceptions
 
-from tests.helpers import PASSWORD, REPO
+from tests.helpers import MQ_USER, PASSWORD, REPO, VHOST
 
 SCRIPT = REPO / "files" / "pulsar_main.py"
 SPEC = importlib.util.spec_from_file_location("pulsar_main", SCRIPT)
@@ -43,22 +43,29 @@ def fake_pulsar(thread_name, error):
     return main
 
 
+# Pulsar names its consumer threads after the queue and the URL with the password masked
+# (pulsar.messaging.bind_amqp.__start_consumer).
+THREAD = f"consume-setup-pyamqp://{MQ_USER}:***@mq.example.org:5671/{VHOST}"
+
+
 def test_a_dead_consumer_exits_pulsar(capsys):
     error = amqp_exceptions.AccessRefused(f"ACCESS_REFUSED - Login was refused {PASSWORD}")
-    with mock.patch.object(pulsar_main.pulsar.main, "main", fake_pulsar("consume-setup-x", error)):
+    with mock.patch.object(pulsar_main.pulsar.main, "main", fake_pulsar(THREAD, error)):
         code = pulsar_main.main(["--config_dir", "/opt/pulsar/config"])
 
     assert code == 1
     err = capsys.readouterr().err
-    assert "consume-setup-x" in err
+    assert THREAD in err
     assert "AccessRefused" in err
     assert "restart" in err
     assert PASSWORD not in err
 
 
-def test_pulsar_keeps_running_when_another_thread_dies():
+@pytest.mark.parametrize("name", ["monitor", "consume-heartbeat-pulsar_production__setup"])
+def test_pulsar_keeps_running_when_another_thread_dies(name):
+    # A heartbeat thread's error is the connection's: the consumer reconnects by itself.
     def main(argv):
-        threading.Thread(name="monitor", target=lambda: 1 / 0).start()
+        threading.Thread(name=name, target=lambda: 1 / 0).start()
         time.sleep(0.2)
         return None
 

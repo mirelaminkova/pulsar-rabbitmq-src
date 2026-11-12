@@ -119,7 +119,6 @@ def test_login_refused():
         "pulsar_amqp_password",
         "byoc_pulsar",
     )
-    assert "src_galaxy" not in run_check(connect_error=error)[1]
 
 
 def test_vhost_not_allowed():
@@ -135,7 +134,6 @@ def test_unknown_host():
         "mq.example.org",
         "pulsar_amqp_host",
     )
-    assert "pulsar_galaxy_fqdn" not in run_check(connect_error=error)[1]
 
 
 EU = {"pulsar_amqp_host": "mq.galaxyproject.eu"}

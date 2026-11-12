@@ -263,7 +263,7 @@ INVALID_PASSWORDS = [
     "with,comma1234",
     "quote'1234567890",
     "colon:1234567890",
-    "Secret.Pass_word~123",  # the old entry mode allowed . _ ~ -
+    "Secret.Pass_word~123",  # punctuation
     "abc@defghijkl",
 ]
 

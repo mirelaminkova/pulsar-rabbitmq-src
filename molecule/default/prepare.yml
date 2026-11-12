@@ -216,8 +216,11 @@
         virtualenv: /opt/galaxy-client/venv
         virtualenv_command: /usr/bin/python3 -m venv
 
-- name: Prepare the Pulsar workspace
-  hosts: pulsar_workspace
+# Pulsar verifies the broker's certificate against the system CA bundle; so does Galaxy's
+# client with the runner's `?ssl=1` (py-amqp's default TLS client context, without the
+# hostname check), as on usegalaxy.eu with a public CA.
+- name: Trust the test CA on both workspaces
+  hosts: all
   gather_facts: false
   vars:
     tls_dir: "{{ molecule_tls_dir }}"
@@ -237,6 +240,16 @@
         mode: '0644'
       notify: Update the system CA bundle
 
+  handlers:
+    - name: Update the system CA bundle
+      ansible.builtin.command:
+        argv: [update-ca-certificates]
+      changed_when: true
+
+- name: Prepare the Pulsar workspace
+  hosts: pulsar_workspace
+  gather_facts: false
+  tasks:
     # SRC mounts an attached volume at /data/<volume name>; here the runner's ext4 volume.
     - name: Check that the storage is a separate mount
       ansible.builtin.command:
@@ -244,9 +257,3 @@
       register: _storage_mount
       changed_when: false
       failed_when: _storage_mount.stdout | trim != 'ext4'
-
-  handlers:
-    - name: Update the system CA bundle
-      ansible.builtin.command:
-        argv: [update-ca-certificates]
-      changed_when: true

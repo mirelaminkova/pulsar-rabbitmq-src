@@ -13,7 +13,8 @@ pulsar_amqp_name: ""
 # The form's `password`: 10 to 128 letters and digits. Empty: generated (24 characters) and
 # kept with the name. Shown on the welcome page for the form; not an SRC secret.
 pulsar_amqp_password: ""
-# The manager byoc-sync's runner uses.
+# The manager byoc-sync's runner uses (fixed in its runner template): change it only for a
+# Galaxy whose runner uses another name, or Galaxy's jobs stay in a queue Pulsar never reads.
 pulsar_manager: production
 # The workspace's attached storage volume, which SRC mounts at /data/<volume name>: that
 # mount point (Pulsar then uses /data/<volume name>/pulsar) or a directory on it. Required.
@@ -126,8 +127,9 @@ pulsar_docker_data_root: "{{ _pulsar_amqp.storage_path }}/docker"
 pulsar_venv: /opt/pulsar/venv
 pulsar_config_dir: /opt/pulsar/config
 pulsar_check_script: /opt/pulsar/check_amqp.py
-# files/check_storage.py, run as root before Pulsar, Docker and slurmd start; alone in its
-# root-only directory, as Python 3.10's -I still puts the script's directory on sys.path.
+# files/check_storage.py, run as root before Pulsar, Docker and slurmd start, in a directory
+# only root can write to and that holds only this component's root-owned scripts, as Python
+# 3.10's -I still puts the script's directory on sys.path.
 pulsar_storage_check_script: /usr/local/libexec/pulsar-src/check_storage.py
 pulsar_version: "0.15.15"
 # Ubuntu's CA bundle: the broker's certificate is verified against it, together with its

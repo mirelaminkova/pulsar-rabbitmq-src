@@ -267,6 +267,18 @@ def test_welcome_page_shows_the_broker_version_and_storage():
     assert "<code>/data/pulsar_storage/pulsar/staging</code>" in page
 
 
+def test_welcome_page_follows_the_resolved_credentials():
+    # tasks/credentials.yml replaces _pulsar_amqp (set_fact) with the generated credentials.
+    params = resolve("_pulsar_amqp_params")
+    amqp = resolve("_pulsar_amqp", _pulsar_amqp_params={**params, "name": "srcdeadbeef"})
+
+    page = render("welcome.html.j2", _pulsar_amqp=amqp)
+
+    assert "user <code>galaxy_srcdeadbeef_byoc</code>" in page
+    assert "<dd><code>srcdeadbeef</code></dd>" in page
+    assert "<code>hpc</code>" not in page
+
+
 def test_welcome_page_shows_the_default_broker():
     # pulsar_amqp_host unset (an empty string from SRC): usegalaxy.eu's broker.
     page = render("welcome.html.j2", pulsar_amqp_host="")

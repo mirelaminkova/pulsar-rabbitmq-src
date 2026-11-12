@@ -27,10 +27,16 @@ from tests.byoc_contract import naming
 from tests.helpers import BYOC_CONTRACT, resolve
 
 SITE = yaml.safe_load((BYOC_CONTRACT / "eu.yml").read_text())
-RUNNER_PARAMS = ("jobs_directory", "persistence_directory")
+# The destination's params the job needs (its limits and the owner guard are Galaxy's).
+DESTINATION_PARAMS = ("jobs_directory", "persistence_directory")
 
 
-def _render(template, **context):
+def byoc_names(name):
+    """byoc-sync's names for the BYOC ``name`` (usegalaxy.eu's patterns)."""
+    return naming.Names.for_(name, naming.NamingConfig(**SITE["naming"]))
+
+
+def render_byoc_template(template, **context):
     """Render a byoc-sync template as its Renderer does ([[ ]] delimiters, its filters)."""
     env = jinja2.Environment(  # noqa: S701  # nosemgrep: missing-autoescape-disabled
         loader=jinja2.FileSystemLoader(str(BYOC_CONTRACT / "templates" / "eu")),
@@ -62,27 +68,46 @@ def galaxy_job_config(params, galaxy_url):
     if not (amqp["name"] and amqp["password"]):
         raise ValueError("pulsar_amqp_name and pulsar_amqp_password must be the deployment's")
     form = resolve("_pulsar_byoc_form", **params)
-    names = naming.Names.for_(amqp["name"], naming.NamingConfig(**SITE["naming"]))
-    site = {"mq_host": amqp["host"], "mq_port": amqp["port"], "galaxy_url": galaxy_url}
-    req = {
+    runner = galaxy_runner(amqp, form, galaxy_url)
+    destination = galaxy_destination(amqp, form)
+    return {
+        "runner": {"load": runner["load"], **runner["params"]},
+        "destination": {key: destination["params"][key] for key in DESTINATION_PARAMS},
+    }
+
+
+def byoc_request(form):
+    """byoc-sync's ``req`` (a validated ByocRequest without the password) for the form."""
+    return {
         "max_cores": form["max_accepted_cores"],
         "max_mem": form["max_accepted_mem"],
         "min_gpus": form["min_accepted_gpus"],
         "max_gpus": form["max_accepted_gpus"],
         "nfs_path": form["nfs_path"],
     }
+
+
+def galaxy_runner(amqp, form, galaxy_url=SITE["site"]["galaxy_url"]):
+    """Galaxy's runner entry for this Pulsar, from byoc-sync's runner.yml.j2."""
+    names = byoc_names(amqp["name"])
+    site = {"mq_host": amqp["host"], "mq_port": amqp["port"], "galaxy_url": galaxy_url}
+    text = render_byoc_template("runner.yml.j2", names=names, site=site, req=byoc_request(form))
     # byoc-sync writes '{{ rabbitmq_password_... }}' into the runner for Ansible's vault
     # to fill in when the playbook is deployed; here the password takes its place.
-    runner_text = _render("runner.yml.j2", names=names, site=site, req=req)
-    [runner] = yaml.safe_load(
-        runner_text.replace("{{ " + names.vault_var + " }}", amqp["password"])
+    [runner] = yaml.safe_load(text.replace("{{ " + names.vault_var + " }}", amqp["password"]))
+    return runner
+
+
+def galaxy_destination(amqp, form):
+    """Galaxy's TPV destination for this Pulsar, from byoc-sync's destination.yml.j2."""
+    text = render_byoc_template(
+        "destination.yml.j2",
+        names=byoc_names(amqp["name"]),
+        req=byoc_request(form),
+        email="e2e@example.org",
     )
-    destination_text = _render("destination.yml.j2", names=names, req=req, email="e2e@example.org")
-    [destination] = yaml.safe_load(destination_text).values()
-    return {
-        "runner": {"load": runner["load"], **runner["params"]},
-        "destination": {key: destination["params"][key] for key in RUNNER_PARAMS},
-    }
+    [destination] = yaml.safe_load(text).values()
+    return destination
 
 
 def main(argv=None):

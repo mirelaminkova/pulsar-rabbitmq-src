@@ -32,8 +32,9 @@ def test_runner_and_destination_are_byoc_syncs():
 
     assert config["runner"] == {
         "load": "galaxy.jobs.runners.pulsar:PulsarMQJobRunner",
-        # Galaxy connects as this Pulsar's own user; ?ssl=1 encrypts without verification
-        # on the Galaxy side (Pulsar's side verifies, test_pulsar_compat).
+        # Galaxy connects as this Pulsar's own user; its ?ssl=1 verifies the certificate
+        # chain but not the hostname (py-amqp's default context); Pulsar's side verifies
+        # both (test_pulsar_compat).
         "amqp_url": f"{URL}?ssl=1",
         "galaxy_url": "https://usegalaxy.eu",
         "manager": "production",

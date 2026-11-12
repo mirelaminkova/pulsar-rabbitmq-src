@@ -358,7 +358,9 @@ def test_check_script_is_installed_for_the_units():
     assert module["src"] == "files/check_storage.py"
     assert resolve_text(module["dest"]) == "/usr/local/libexec/pulsar-src/check_storage.py"
     assert (module["owner"], module["mode"]) == ("root", "0755")
-    directory = task_named(STORAGE_TASKS, "Create the root-only directory of the storage check")
+    directory = task_named(
+        STORAGE_TASKS, "Create the root-owned directory of this component's scripts"
+    )
     directory = directory["ansible.builtin.file"]
     assert resolve_text(directory["path"]) == "/usr/local/libexec/pulsar-src"
     assert (directory["owner"], directory["mode"], directory["follow"]) == ("root", "0755", False)

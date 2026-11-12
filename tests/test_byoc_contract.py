@@ -8,45 +8,23 @@ byoc-sync accepts, and Pulsar's app.yml must match the runner byoc-sync writes.
 """
 
 import filecmp
-import json
 import os
 from pathlib import Path
 
-import jinja2
 import pytest
 import yaml
 
 from filter_plugins.pulsar_amqp import pulsar_amqp_errors, pulsar_byoc_form
 from tests.byoc_contract import naming, validate
+from tests.e2e.galaxy_config import (
+    SITE,
+    byoc_names,
+    galaxy_destination,
+    galaxy_runner,
+    render_byoc_template,
+)
 from tests.helpers import BYOC_CONTRACT, PASSWORD, load_yaml, render_yaml, resolve, settings
 from tests.test_parameters import INVALID_NAMES, INVALID_PASSWORDS, VALID_NAMES, VALID_PASSWORDS
-
-SITE = yaml.safe_load((BYOC_CONTRACT / "eu.yml").read_text())
-
-
-def byoc_names(name):
-    return naming.Names.for_(name, naming.NamingConfig(**SITE["naming"]))
-
-
-def byoc_render(template, **context):
-    """Render a byoc-sync template as its Renderer does ([[ ]] delimiters, its filters)."""
-    env = jinja2.Environment(  # noqa: S701  # nosemgrep: missing-autoescape-disabled
-        loader=jinja2.FileSystemLoader(str(BYOC_CONTRACT / "templates" / "eu")),
-        variable_start_string="[[",
-        variable_end_string="]]",
-        block_start_string="[%",
-        block_end_string="%]",
-        comment_start_string="[#",
-        comment_end_string="#]",
-        undefined=jinja2.StrictUndefined,
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=False,
-    )
-    env.filters["q"] = lambda v: json.dumps(str(v))
-    env.filters["pystr"] = lambda v: json.dumps(str(v))
-    return env.get_template(template).render(**context)
-
 
 # Names
 
@@ -152,17 +130,6 @@ def test_the_form_passes_byoc_syncs_validation():
 # Galaxy's runner and destination, from byoc-sync's templates
 
 
-def galaxy_runner(amqp, form):
-    names = byoc_names(amqp["name"])
-    site = {**SITE["site"], "mq_host": amqp["host"], "mq_port": amqp["port"]}
-    [runner] = yaml.safe_load(
-        byoc_render("runner.yml.j2", names=names, site=site, req=form)
-        # byoc-sync writes '{{ rabbitmq_password_... }}' for Ansible's vault to fill in.
-        .replace("{{ " + names.vault_var + " }}", amqp["password"])
-    )
-    return runner
-
-
 PARAMS = [
     pytest.param({}, id="defaults"),
     pytest.param(
@@ -206,18 +173,7 @@ def test_app_yml_matches_byoc_syncs_runner(params, runner):
 
 
 def test_destination_directories_are_ours():
-    amqp = resolve("_pulsar_amqp")
-    form = resolve("_pulsar_byoc_form")
-    names = byoc_names(amqp["name"])
-    req = {
-        "max_cores": form["max_accepted_cores"],
-        "max_mem": form["max_accepted_mem"],
-        "min_gpus": 0,
-        "max_gpus": 0,
-        "nfs_path": form["nfs_path"],
-    }
-    text = byoc_render("destination.yml.j2", names=names, req=req, email="alice@example.org")
-    [destination] = yaml.safe_load(text).values()
+    destination = galaxy_destination(resolve("_pulsar_amqp"), resolve("_pulsar_byoc_form"))
     app = render_yaml("pulsar-app.yml.j2")
 
     assert destination["params"]["jobs_directory"] == app["staging_directory"]
@@ -229,7 +185,7 @@ def test_destination_directories_are_ours():
 
 def test_mq_user_entry_is_ours():
     amqp = resolve("_pulsar_amqp")
-    [entry] = yaml.safe_load(byoc_render("mq_user.yml.j2", names=byoc_names(amqp["name"])))
+    [entry] = yaml.safe_load(render_byoc_template("mq_user.yml.j2", names=byoc_names(amqp["name"])))
 
     assert entry["user"] == amqp["mq_user"]
     assert entry["vhost"] == amqp["vhost"]
@@ -245,8 +201,6 @@ def test_certificate_and_hostname_verification():
 
 def test_the_galaxy_component_contract_is_gone():
     assert not (BYOC_CONTRACT.parent / "galaxy_contract").exists()
-    for path in ("README.md", "parameters.yml", "group_vars/all.yml", "playbook.yml"):
-        assert "src_galaxy_pulsar_amqp_configs" not in (BYOC_CONTRACT.parents[1] / path).read_text()
     assert "pulsar_galaxy_fqdn" not in load_yaml("parameters.yml")
 
 

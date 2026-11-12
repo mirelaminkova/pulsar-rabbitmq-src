@@ -29,6 +29,7 @@ from tests.helpers import (
     task_named,
     tasks,
 )
+from tests.test_parameters import INVALID_NAMES, INVALID_PASSWORDS, VALID_NAMES, VALID_PASSWORDS
 
 SCRIPT = REPO / "files" / "byoc_credentials.py"
 SPEC = importlib.util.spec_from_file_location("byoc_credentials", SCRIPT)
@@ -91,6 +92,21 @@ def test_generated_credentials_pass_byoc_syncs_rules():
         assert validate._password(password, {}) == password
 
 
+# The helper has its own copy of byoc-sync's rules (it runs with the system Python).
+
+
+@pytest.mark.parametrize("name", VALID_NAMES + INVALID_NAMES)
+def test_helper_name_rule_is_byoc_syncs(name):
+    assert byoc_credentials.is_valid_name(name) == validate.is_valid_name(name)
+
+
+@pytest.mark.parametrize("password", VALID_PASSWORDS + INVALID_PASSWORDS)
+def test_helper_password_rule_is_byoc_syncs(password):
+    assert byoc_credentials.is_valid_password(password) == (
+        validate._password(password, {}) is not None
+    )
+
+
 def test_generated_credentials_are_random():
     assert len({byoc_credentials.generate_name() for _ in range(20)}) == 20
     assert len({byoc_credentials.generate_password() for _ in range(20)}) == 20
@@ -137,6 +153,20 @@ def test_given_credentials_are_stored_on_the_first_run(store):
     assert result(store) == {"name": "alice01", "password": PASSWORD, "changed": False}
 
 
+@pytest.mark.parametrize(
+    ("given", "parameter"),
+    [({"name": "hpc_byoc"}, "pulsar_amqp_name"), ({"password": "short"}, "pulsar_amqp_password")],
+)
+def test_an_invalid_given_value_is_refused_and_nothing_is_stored(store, given, parameter):
+    error = failure(store, **given)
+
+    assert parameter in error
+    assert "byoc-sync" in error
+    assert "hpc_byoc" not in error
+    assert "short" not in error
+    assert not store.exists()
+
+
 # Check mode
 
 
@@ -165,7 +195,7 @@ def failure(store, **given):
     code, out, err = run(store, **given)
     assert code == 1
     assert out == ""
-    assert str(store) in err
+    assert PASSWORD not in err
     return err
 
 
@@ -223,6 +253,24 @@ def test_a_store_readable_by_others_is_refused(store):
     store.chmod(0o644)
 
     assert "0600" in failure(store)
+
+
+def test_an_unreadable_store_is_an_error_not_a_traceback(store, monkeypatch):
+    write_store(store, json.dumps({"name": "srcdeadbeef", "password": PASSWORD}))
+    real_open = open
+
+    def failing_open(path, *args, **kwargs):
+        if str(path) == str(store):
+            raise OSError(5, "Input/output error")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+
+    error = failure(store)
+
+    assert "cannot read" in error
+    assert str(store) in error
+    assert "Input/output error" in error
 
 
 def test_a_store_of_another_owner_is_refused(store, monkeypatch):
@@ -354,6 +402,12 @@ def test_script_is_installed_root_only_before_it_runs():
     assert module["src"] == "files/byoc_credentials.py"
     assert module["dest"] == "{{ pulsar_byoc_script }}"
     assert (module["owner"], module["group"], module["mode"]) == ("root", "root", "0755")
+    # Check mode on a fresh workspace: the helper must be there to run with --no-write.
+    assert install["check_mode"] is False
+    directory = task_named(
+        tasks("tasks/storage.yml"), "Create the root-owned directory of this component's scripts"
+    )
+    assert directory["check_mode"] is False
 
 
 @pytest.mark.parametrize("check_mode", [False, True])
@@ -378,6 +432,11 @@ def test_task_runs_the_script_with_the_parameters_on_stdin(check_mode):
     assert json.loads(resolve_text(command["stdin"], pulsar_amqp_name="x")) == {
         "name": "x",
         "password": PASSWORD,
+    }
+    # A number from a YAML file (not SRC's strings) still reaches the helper as a string.
+    assert json.loads(resolve_text(command["stdin"], pulsar_amqp_password=1234567890)) == {
+        "name": "hpc",
+        "password": "1234567890",
     }
     # The password passes through this task: nothing of it is logged, also when it fails.
     assert task["no_log"] is True
@@ -438,10 +497,16 @@ def test_settings_are_rebuilt_from_the_resolved_credentials():
 def test_resolved_credentials_are_validated_again():
     task = task_named(CREDENTIAL_TASKS, "Validate the resolved credentials")
     check = task["ansible.builtin.assert"]
+    valid = resolve("_pulsar_amqp")
+    invalid = resolve("_pulsar_amqp", pulsar_amqp_name="hpc_byoc", pulsar_amqp_password="x" * 9)
 
-    assert check["that"] == "_pulsar_amqp | pulsar_amqp_errors | length == 0"
-    assert "pulsar_amqp_errors" in check["fail_msg"]
-    assert task.get("no_log") is not True
+    assert condition(check["that"], _pulsar_amqp=valid) is True
+    assert condition(check["that"], _pulsar_amqp=invalid) is False
+    message = resolve_text(check["fail_msg"], _pulsar_amqp=invalid)
+    assert "pulsar_amqp_name" in message
+    assert "pulsar_amqp_password" in message
+    assert "x" * 9 not in message
+    assert task.get("no_log") is not True  # the message must be visible
     names = [t["name"] for t in CREDENTIAL_TASKS]
     assert names.index(task["name"]) == len(names) - 1
 

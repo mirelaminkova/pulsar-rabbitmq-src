@@ -8,13 +8,13 @@ STORE is the credentials file (<storage directory>/byoc.json, root-only). The JS
 holds the component parameters pulsar_amqp_name and pulsar_amqp_password; a given value
 wins over the stored one, an empty one means the stored value, or a new one when there is
 none: a name of "src" and 8 lowercase hex digits, a password of 24 letters and digits, both
-from the `secrets` module and both within byoc-sync's rules. What is in effect is written to
+from the `secrets` module. What is in effect must follow byoc-sync's rules and is written to
 STORE (created 0600, replaced atomically), unless --no-write (Ansible's check mode).
 
 Prints {"name": ..., "password": ..., "changed": true|false} on stdout. Exit status 1 with
 one line on stderr, never containing a name or password, when STORE is not a file this
-script wrote (another owner, a link, readable by others, not its JSON) or cannot be written,
-or when a stored value does not follow byoc-sync's rules.
+script wrote (another owner, a link, readable by others, not its JSON), cannot be read or
+written, or when a given or stored value does not follow byoc-sync's rules.
 """
 
 import argparse
@@ -81,13 +81,15 @@ def read_store(path):
         raise CredentialsError(f"{path} must be owned by the user running the deployment")
     if stat.S_IMODE(info.st_mode) & 0o077:
         raise CredentialsError(f"{path} must have mode 0600: it holds a password")
-    with open(path) as handle:
-        try:
+    try:
+        with open(path) as handle:
             stored = _credentials(json.load(handle), path)
-        except ValueError:
-            raise CredentialsError(
-                f"{path} is not the credentials file this component writes"
-            ) from None
+    except OSError as error:
+        raise CredentialsError(f"cannot read {path}: {error.strerror}") from None
+    except ValueError:
+        raise CredentialsError(
+            f"{path} is not the credentials file this component writes"
+        ) from None
     if not is_valid_name(stored["name"]) or not is_valid_password(stored["password"]):
         raise CredentialsError(
             f"the name or password stored in {path} does not follow byoc-sync's rules; "
@@ -104,10 +106,13 @@ def write_store(path, credentials):
     except OSError as error:
         raise CredentialsError(f"cannot write {path}: {error.strerror}") from None
     try:
+        # mkstemp creates the file 0600. Written to disk before it replaces the store: a
+        # truncated store after a crash would cost the Galaxy account its credentials.
         with os.fdopen(descriptor, "w") as handle:
             json.dump(credentials, handle)
             handle.write("\n")
-        os.chmod(temporary, 0o600)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError as error:
         os.unlink(temporary)
@@ -116,6 +121,16 @@ def write_store(path, credentials):
 
 def resolve(path, given, write=True):
     """The credentials in effect: given, else stored, else generated; stored when changed."""
+    # The playbook validates the parameters first; this keeps a bad value out of the store
+    # for any other caller, so that no later run refuses the store.
+    if given["name"] and not is_valid_name(given["name"]):
+        raise CredentialsError(
+            "the given name (pulsar_amqp_name) does not follow byoc-sync's rules"
+        )
+    if given["password"] and not is_valid_password(given["password"]):
+        raise CredentialsError(
+            "the given password (pulsar_amqp_password) does not follow byoc-sync's rules"
+        )
     stored = read_store(path)
     effective = {
         "name": given["name"] or (stored or {}).get("name") or generate_name(),

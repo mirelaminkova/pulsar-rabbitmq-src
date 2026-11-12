@@ -11,7 +11,8 @@ pulsar_amqp_port: "5671"
 pulsar_amqp_name: ""
 # The form's password: 10 to 128 letters and digits. Empty: generated and kept with the name.
 pulsar_amqp_password: ""
-# The manager byoc-sync's runner uses.
+# The manager byoc-sync's runner uses (fixed in its runner template): change it only for a
+# Galaxy whose runner uses another name, or Galaxy's jobs stay in a queue Pulsar never reads.
 pulsar_manager: production
 # The workspace's attached storage volume: its mount point /data/<volume name> (Pulsar then
 # uses /data/<volume name>/pulsar) or a directory on it. Required. Pulsar keeps all its data

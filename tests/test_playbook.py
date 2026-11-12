@@ -7,6 +7,7 @@ import pytest
 from tests.byoc_contract.validate import FIELDS as FORM_FIELDS
 from tests.helpers import (
     FACTS,
+    FORM_NOTES,
     PASSWORD,
     REPO,
     form_row,
@@ -243,7 +244,6 @@ def test_unit_is_installed_before_tasks_that_can_fail():
 # Templates: the welcome page (templates/welcome.html.j2)
 
 # FORM_FIELDS: byoc-sync's byoc_pulsar form, in its order (vendored, checked against its main).
-FORM_UNITS = {"max_accepted_mem": "GB"}
 # The state's tag and the text next to it; for error, the check's message (MESSAGE).
 MESSAGE = "the broker refused the connection"
 STATE_TAGS = {
@@ -268,11 +268,13 @@ def test_welcome_page_shows_the_byoc_form_in_the_forms_order():
     assert set(values) == set(FORM_FIELDS)
     positions = []
     for field in FORM_FIELDS:
-        row = form_row(field, values[field], FORM_UNITS.get(field, ""))
+        row = form_row(field, values[field])
         assert row in page, field
         positions.append(page.index(row))
     assert positions == sorted(positions)
-    assert form_row("max_accepted_mem", values["max_accepted_mem"]) not in page  # the unit
+    for field in FORM_NOTES:  # the note is outside the copied value
+        assert form_row(field, values[field], note="") not in page
+    assert "/data/share" in page
     assert page.count(PASSWORD) == 1
     assert "User &rsaquo; Preferences &rsaquo; Manage information" in page
     assert "reload this page" in page

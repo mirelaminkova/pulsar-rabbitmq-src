@@ -13,7 +13,7 @@
      ('max_accepted_mem', form.max_accepted_mem, 'GB'),
      ('min_accepted_gpus', form.min_accepted_gpus, ''),
      ('max_accepted_gpus', form.max_accepted_gpus, ''),
-     ('nfs_path', form.nfs_path, ''),
+     ('nfs_path', form.nfs_path, 'must be filled in: without it Galaxy uses its default Pulsar directory (/data/share on usegalaxy.eu), which does not exist here'),
    ] %}
 <!doctype html>
 <html lang="en">
@@ -111,9 +111,9 @@
     <section class="card">
       <h2>Enter this in Galaxy</h2>
       <dl>
-{% for field, value, unit in rows %}
+{% for field, value, note in rows %}
         <dt>{{ field | e }}</dt>
-        <dd><code id="byoc-{{ field }}">{{ value | e }}</code> <button class="copy-btn" type="button" onclick="copyValue('byoc-{{ field }}', this)">Copy</button>{{ (' ' ~ unit) if unit else '' }}</dd>
+        <dd><code id="byoc-{{ field }}">{{ value | e }}</code> <button class="copy-btn" type="button" onclick="copyValue('byoc-{{ field }}', this)">Copy</button>{{ (' ' ~ note) if note else '' }}</dd>
 {% endfor %}
       </dl>
       <p>Open your Galaxy's User &rsaquo; Preferences &rsaquo; Manage information &rsaquo; <code>byoc_pulsar</code> and enter these values; after a Galaxy admin has merged your request, Galaxy sends your jobs here (reload this page to see the state).</p>

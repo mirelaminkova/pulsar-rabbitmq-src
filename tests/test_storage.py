@@ -156,7 +156,7 @@ def test_a_mount_point_is_used_as_its_pulsar_directory_everywhere():
     check = task_named(STORAGE_TASKS, "Check that the storage path is on an attached volume")
     create = task_named(STORAGE_TASKS, "Create the root-owned storage directory")
 
-    assert f"<strong>Storage:</strong> <code>{derived}</code>" in page
+    assert f"<dd><code>{derived}</code>, staging <code>{derived}/staging</code></dd>" in page
     assert f"jobs_directory: {derived}/staging" in page
     assert app["staging_directory"] == f"{derived}/staging"
     assert app["persistence_directory"] == f"{derived}/persisted_data"
@@ -181,15 +181,15 @@ def test_welcome_page_entry_matches_app_yml_staging_directory():
     assert parsed_entry(entry)["jobs_directory"] == app["staging_directory"]
 
 
-def test_welcome_page_shows_the_storage_and_its_directories():
+def test_welcome_page_shows_the_storage_and_the_staging_directory():
     page = render("welcome.html.j2", pulsar_storage_path="/data/vol/pulsar", pulsar_docker="true")
-    assert "<strong>Storage:</strong> <code>/data/vol/pulsar</code>" in page
-    leaves = ("home", "persisted_data", "job_tmp", "apptainer_cache", "apptainer_tmp", "docker")
-    for leaf in (*leaves, "slurmd"):
-        assert f"<code>/data/vol/pulsar/{leaf}</code>" in page
-    page = render("welcome.html.j2", pulsar_apptainer="false", pulsar_job_runner="local")
-    for leaf in ("apptainer_cache", "docker", "slurmd"):
-        assert f"{STORAGE}/{leaf}" not in page
+    assert (
+        "<dd><code>/data/vol/pulsar</code>, staging <code>/data/vol/pulsar/staging</code></dd>"
+        in page
+    )
+    # The directory layout is the README's, not the page's.
+    for leaf in ("home", "persisted_data", "job_tmp", "apptainer_cache", "docker", "slurmd"):
+        assert f"/data/vol/pulsar/{leaf}" not in page
 
 
 # --- Layout ----------------------------------------------------------------------

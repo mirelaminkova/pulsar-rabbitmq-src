@@ -1,14 +1,16 @@
 """Structure of the playbook, parameters and templates: secrets, ordering, removed relay code."""
 
-import html
 import re
 
 import pytest
 
+from tests.byoc_contract.validate import FIELDS as FORM_FIELDS
 from tests.helpers import (
     FACTS,
+    FORM_NOTES,
     PASSWORD,
     REPO,
+    form_row,
     load_yaml,
     play,
     render,
@@ -239,32 +241,57 @@ def test_unit_is_installed_before_tasks_that_can_fail():
     assert unit < names.index("Check that the Galaxy CVMFS repositories mount")
 
 
-# Templates
+# Templates: the welcome page (templates/welcome.html.j2)
+
+# FORM_FIELDS: byoc-sync's byoc_pulsar form, in its order (vendored, checked against its main).
+# The state's tag and the text next to it; for error, the check's message (MESSAGE).
+MESSAGE = "the broker refused the connection"
+STATE_TAGS = {
+    "connected": ("Connected", "Galaxy's broker accepts this Pulsar"),
+    "waiting": ("Waiting", "waiting for the Galaxy admins to create your account"),
+    "error": ("Error", MESSAGE),
+    "unknown": ("Not checked yet", "the connection check has not run yet"),
+}
 
 
-def test_welcome_page_shows_the_byoc_form():
+def byoc_state(state, message="", checked_at=""):
+    return {"_pulsar_byoc_state": {"state": state, "message": message, "checked_at": checked_at}}
+
+
+def test_welcome_page_shows_the_byoc_form_in_the_forms_order():
     # What the user enters in Galaxy's preferences (byoc_pulsar): the form byoc-sync reads.
     page = render("welcome.html.j2")
-    form = resolve("_pulsar_byoc_form")
+    values = {**resolve("_pulsar_byoc_form"), "password": PASSWORD}
 
     assert "byoc_pulsar" in page
-    assert "src_galaxy_pulsar_amqp_configs" not in page
-    assert "galaxy-amqp-param" not in page
-    for key, value in form.items():
-        assert f"<dt>{key}</dt>" in page, key
-        assert f"<code>{html.escape(str(value))}</code>" in page, key
-    assert f'<pre id="byoc-password">{PASSWORD}</pre>' in page
+    assert "Enter this in Galaxy" in page
+    assert set(values) == set(FORM_FIELDS)
+    positions = []
+    for field in FORM_FIELDS:
+        row = form_row(field, values[field])
+        assert row in page, field
+        positions.append(page.index(row))
+    assert positions == sorted(positions)
+    for field in FORM_NOTES:  # the note is outside the copied value
+        assert form_row(field, values[field], note="") not in page
+    assert "/data/share" in page
     assert page.count(PASSWORD) == 1
+    assert "User &rsaquo; Preferences &rsaquo; Manage information" in page
+    assert "reload this page" in page
 
 
 def test_welcome_page_shows_the_broker_version_and_storage():
     page = render("welcome.html.j2")
 
-    assert "<code>amqps://mq.example.org:5671</code>, user <code>galaxy_hpc_byoc</code>" in page
-    assert "vhost <code>/pulsar/galaxy_hpc_byoc</code>" in page
-    assert "0.15.15 on <code>pulsar.example.org</code>" in page
-    assert "<code>/data/pulsar_storage/pulsar</code>" in page
-    assert "<code>/data/pulsar_storage/pulsar/staging</code>" in page
+    assert "<dd><code>amqps://mq.example.org:5671</code></dd>" in page
+    assert (
+        "<dd><code>galaxy_hpc_byoc</code>, vhost <code>/pulsar/galaxy_hpc_byoc</code></dd>" in page
+    )
+    assert "<dd>0.15.15 on <code>pulsar.example.org</code></dd>" in page
+    assert (
+        "<dd><code>/data/pulsar_storage/pulsar</code>, staging "
+        "<code>/data/pulsar_storage/pulsar/staging</code></dd>" in page
+    )
 
 
 def test_welcome_page_follows_the_resolved_credentials():
@@ -274,9 +301,10 @@ def test_welcome_page_follows_the_resolved_credentials():
 
     page = render("welcome.html.j2", _pulsar_amqp=amqp)
 
-    assert "user <code>galaxy_srcdeadbeef_byoc</code>" in page
-    assert "<dd><code>srcdeadbeef</code></dd>" in page
+    assert "<code>galaxy_srcdeadbeef_byoc</code>" in page
+    assert form_row("username", "srcdeadbeef") in page
     assert "<code>hpc</code>" not in page
+    assert "galaxy_hpc_byoc" not in page
 
 
 def test_welcome_page_shows_the_default_broker():
@@ -285,6 +313,52 @@ def test_welcome_page_shows_the_default_broker():
 
     assert "<code>amqps://mq.galaxyproject.eu:5671</code>" in page
     assert "mq.example.org" not in page
+
+
+@pytest.mark.parametrize(("state", "expected"), STATE_TAGS.items())
+def test_welcome_page_shows_the_connection_state(state, expected):
+    page = render("welcome.html.j2", **byoc_state(state, message=MESSAGE))
+    tag, text = expected
+
+    assert f'<span class="state state-{state}">{tag}</span>' in page
+    assert text in page
+    assert (MESSAGE in page) == (state == "error")
+    for other in set(STATE_TAGS) - {state}:
+        assert f'class="state state-{other}"' not in page
+
+
+def test_welcome_page_shows_an_error_without_a_message():
+    page = render("welcome.html.j2", **byoc_state("error"))
+    assert '<span class="state state-error">Error</span>' in page
+    assert "the connection check failed" in page
+
+
+@pytest.mark.parametrize(
+    "params",
+    [byoc_state("mystery"), byoc_state("Connected"), {"_pulsar_byoc_state": {}}]
+    + [{"_pulsar_byoc_state": value} for value in (None, "", '{"state": "connected"}', [])],
+    ids=repr,
+)
+def test_welcome_page_treats_an_unexpected_or_malformed_state_as_unknown(params):
+    # A state file from an earlier version must never break the deployment.
+    page = render("welcome.html.j2", **params)
+    assert '<span class="state state-unknown">Not checked yet</span>' in page
+    assert "state-connected" not in page[page.index("<body>") :]
+
+
+@pytest.mark.parametrize("state", list(STATE_TAGS))
+def test_welcome_page_leaves_the_check_time_off(state):
+    # checked_at changes every run; a page with it would make the template task change on
+    # every rerun (molecule's idempotence step, the Slurm live rerun check).
+    page = render("welcome.html.j2", **byoc_state(state, checked_at="2026-11-12T10:00:00Z"))
+    assert "2026-11-12" not in page
+    assert "checked at" not in page
+
+
+def test_welcome_page_shows_not_checked_yet_by_default():
+    # group_vars' default: the tolerant check (issue #22) overrides it when it has run.
+    assert resolve("_pulsar_byoc_state") == {"state": "unknown", "message": "", "checked_at": ""}
+    assert '<span class="state state-unknown">Not checked yet</span>' in render("welcome.html.j2")
 
 
 def test_welcome_page_shows_the_troubleshooting_commands():
@@ -299,17 +373,24 @@ def test_welcome_page_shows_the_troubleshooting_commands():
 
 
 @pytest.mark.parametrize(
-    "section",
+    "text",
     [
         "Deployment settings",
         "galaxy-amqp-tools",
+        "galaxy-amqp-param",
+        "src_galaxy_pulsar_amqp_configs",
         "Important Notes",
         'class="flow"',
         "How Galaxy and Pulsar connect",
+        "Connect Galaxy",
+        "galaxy_fqdn",
+        "galaxy_entry",
+        "copy-box",
+        "checked that",
     ],
 )
-def test_welcome_page_no_longer_has_the_reference_manual_sections(section):
-    assert section not in render("welcome.html.j2")
+def test_welcome_page_has_no_text_of_earlier_pages(text):
+    assert text not in render("welcome.html.j2")
 
 
 @pytest.mark.parametrize("runner", ["slurm", "local"])
@@ -329,40 +410,64 @@ def test_welcome_page_renders_for_every_combination(runner, docker, apptainer, c
     assert page.startswith("<!doctype html>")
     assert page.rstrip().endswith("</html>")
     assert ("<code>queued_drmaa</code>" in page) == (runner == "slurm")
+    assert ("4 CPUs, 14400 MB" in page) == (runner == "slurm")
     assert ("<code>queued_python</code>" in page) == (runner == "local")
+    assert ("3 concurrent jobs" in page) == (runner == "local")
+    assert ("squeue" in page) == (runner == "slurm")
     assert ('<li class="tag">Docker</li>' in page) == (docker == "true")
     assert ('<li class="tag">Apptainer</li>' in page) == (apptainer == "true")
     assert ('<li class="tag">CVMFS</li>' in page) == (cvmfs == "true")
+    assert ("<dd>none</dd>" in page) == ((docker, apptainer, cvmfs) == ("false", "false", "false"))
     assert page.count(PASSWORD) == 1
 
 
-def test_welcome_page_keeps_the_notice_and_noindex():
+def test_welcome_page_keeps_the_layout_notice_and_noindex():
     page = render("welcome.html.j2")
     assert '<meta name="robots" content="noindex">' in page
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in page
+    assert "concrete.min.css" in page
+    assert 'alt="Pulsar logo"' in page
+    assert 'alt="SURF logo"' in page
     assert "RabbitMQ password" in page
     assert "members" in page
+    assert page.index("members") < page.index("Enter this in Galaxy") < page.index("Status")
+    assert page.index("Status") < page.index("Troubleshooting")
 
 
-def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
-    # The page is published before the broker check, so it must not report its result.
-    assert "checked that" not in render("welcome.html.j2")
+XSS = "<script>alert('x')</script>"
+ESCAPED_XSS = "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
 
 
 @pytest.mark.parametrize(
-    "variable",
+    "params",
     [
-        "workspace_fqdn",
-        "pulsar_manager",
-        "pulsar_amqp_name",
-        "pulsar_amqp_host",
-        "pulsar_version",
+        {"workspace_fqdn": XSS},
+        {"pulsar_manager": XSS},
+        {"pulsar_manager": XSS, "pulsar_job_runner": "local"},
+        {"pulsar_amqp_name": XSS},
+        {"pulsar_amqp_password": XSS},
+        {"pulsar_amqp_host": XSS},
+        {"pulsar_amqp_port": XSS},
+        {"pulsar_version": XSS},
+        {"pulsar_storage_path": f"/data/{XSS}"},
+        {"pulsar_venv": XSS},
+        {"pulsar_check_script": XSS},
+        {"pulsar_config_dir": XSS},
+        {"pulsar_num_concurrent_jobs": XSS, "pulsar_job_runner": "local"},
+        {"_pulsar_slurm_cpus": XSS},
+        {"_pulsar_slurm_memory_mb": XSS},
+        byoc_state("error", message=XSS),
+        {"_pulsar_byoc_form": dict.fromkeys(set(FORM_FIELDS) - {"password"}, XSS)},
     ],
+    ids=lambda params: "+".join(params),
 )
-def test_welcome_page_escapes_values(variable):
-    # Most of these are validated before the page is written; the template escapes anyway.
-    page = render("welcome.html.j2", **{variable: "<b>x</b>"})
-    assert "<b>x</b>" not in page
-    assert "&lt;b&gt;x&lt;/b&gt;" in page
+def test_welcome_page_escapes_every_value(params):
+    # Most values are validated before the page is written; the template escapes anyway.
+    page = render("welcome.html.j2", **params)
+    body = page[page.index("<body>") :]
+    assert XSS not in page
+    assert ESCAPED_XSS in body
+    assert "<script>" not in body.split("</main>")[0]
 
 
 def test_service_runs_pulsar_main_as_pulsar():

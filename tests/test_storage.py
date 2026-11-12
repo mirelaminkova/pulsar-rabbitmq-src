@@ -16,6 +16,7 @@ from filter_plugins.pulsar_amqp import pulsar_amqp_errors
 from tests.helpers import (
     PARAMS,
     condition,
+    form_row,
     load_yaml,
     render,
     render_yaml,
@@ -155,7 +156,7 @@ def test_a_mount_point_is_used_as_its_pulsar_directory_everywhere():
     create = task_named(STORAGE_TASKS, "Create the root-owned storage directory")
 
     assert f"<dd><code>{derived}</code>, staging <code>{derived}/staging</code></dd>" in page
-    assert f"<dt>nfs_path</dt>\n        <dd><code>{derived}</code></dd>" in page
+    assert form_row("nfs_path", derived) in page
     assert app["staging_directory"] == f"{derived}/staging"
     assert app["persistence_directory"] == f"{derived}/persisted_data"
     assert f" {derived}\n" in unit
@@ -175,7 +176,7 @@ def test_welcome_page_form_matches_app_yml_staging_directory():
     app = render_yaml("pulsar-app.yml.j2", pulsar_storage_path="/data/vol/pulsar")
     form = resolve("_pulsar_byoc_form", pulsar_storage_path="/data/vol/pulsar")
 
-    assert "<dd><code>/data/vol/pulsar</code></dd>" in page
+    assert form_row("nfs_path", "/data/vol/pulsar") in page
     assert form["nfs_path"] + "/staging" == app["staging_directory"]
     assert form["nfs_path"] + "/persisted_data" == app["persistence_directory"]
 

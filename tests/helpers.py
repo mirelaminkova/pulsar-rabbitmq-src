@@ -11,6 +11,7 @@ import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.loader import add_all_plugin_dirs
 from ansible.template import Templar
+from markupsafe import escape
 
 from filter_plugins.pulsar_amqp import pulsar_amqp_settings
 
@@ -89,6 +90,32 @@ def render(template, **params):
 
 def render_yaml(template, **params):
     return yaml.safe_load(render(template, **params))
+
+
+# What the welcome page says next to a form value: the unit, and that nfs_path is required
+# (with an empty nfs_path byoc-sync's destination inherits the Galaxy's pulsar_default
+# directories, /data/share on usegalaxy.eu, which do not exist here).
+FORM_NOTES = {
+    "max_accepted_mem": "GB",
+    "nfs_path": (
+        "must be filled in: without it Galaxy uses its default Pulsar directory "
+        "(/data/share on usegalaxy.eu), which does not exist here"
+    ),
+}
+
+
+def form_row(field, value, note=None):
+    """The welcome page's row for a ``byoc_pulsar`` form field: the value in a <code> the
+    Copy button copies, the note (FORM_NOTES unless given) outside it. ``value`` is escaped
+    as the template's ``| e`` escapes it."""
+    note = FORM_NOTES.get(field, "") if note is None else note
+    escaped = str(escape(str(value)))
+    return (
+        f"<dt>{field}</dt>\n"
+        f'        <dd><code id="byoc-{field}">{escaped}</code>'
+        f' <button class="copy-btn" type="button" onclick="copyValue(\'byoc-{field}\', this)">'
+        f"Copy</button>{' ' + note if note else ''}</dd>"
+    )
 
 
 def load_yaml(path):

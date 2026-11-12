@@ -9,7 +9,7 @@ Pulsar (this workspace) ──AMQPS──▶ RabbitMQ of the Galaxy, pulsar_amqp
 Pulsar ─────── HTTPS for input/output files ───────▶ https://<galaxy>/api/
 ```
 
-The workspace root (`https://WORKSPACE_HOST/`) is an SRAM-protected **welcome page** with the values to enter in the Galaxy's BYOC form (including the password) and the state of this Pulsar.
+The workspace root (`https://WORKSPACE_HOST/`) is an SRAM-protected **welcome page** with the values to enter in the Galaxy's BYOC form (including the password, each with a copy button) and the state of this Pulsar: whether it is connected to the Galaxy's broker, still waiting for the Galaxy admins to create its account, failing with the check's message, or not checked yet (until the tolerant broker check of issue #22 lands, the page always shows *Not checked yet*).
 
 ## byoc-sync is the contract
 

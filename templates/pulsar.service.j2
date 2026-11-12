@@ -4,6 +4,9 @@ Description=Pulsar (jobs from Galaxy's RabbitMQ)
 # local-fs and remote-fs: stopped before the storage is unmounted at shutdown.
 After=network-online.target local-fs.target remote-fs.target{{ ' docker.service' if _pulsar_amqp.docker_enabled else '' }}{{ ' autofs.service' if _pulsar_cvmfs | bool else '' }}{{ ' munge.service slurmctld.service' if _pulsar_slurm | bool else '' }}
 Wants=network-online.target
+# A refused login (no BYOC account yet) exits Pulsar every RestartSec, for as long as it
+# takes the Galaxy admins to merge byoc-sync's pull request: no start limit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -26,9 +29,11 @@ ExecStartPre=+/usr/bin/python3 -I {{ pulsar_storage_check_script }} {{ _pulsar_a
 # (NoNewPrivileges, PrivateTmp, ProtectHome).
 Environment=DRMAA_LIBRARY_PATH={{ pulsar_drmaa_library_path }}
 {% endif %}
-ExecStart={{ pulsar_venv }}/bin/pulsar-main --config_dir {{ pulsar_config_dir }} --ini_path {{ pulsar_config_dir }}/server.ini
+# pulsar-main through the launcher, which exits when a broker consumer quits (a refused
+# login): Restart= then tries the login again.
+ExecStart={{ pulsar_venv }}/bin/python -I {{ pulsar_main_script }} --config_dir {{ pulsar_config_dir }} --ini_path {{ pulsar_config_dir }}/server.ini
 Restart=always
-RestartSec=10
+RestartSec=30
 # Apptainer from the PPA is unprivileged (no setuid starter) and still works
 # under no_new_privs: Ubuntu 24.04 allows its AppArmor user-namespace profile.
 NoNewPrivileges=true

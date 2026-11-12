@@ -123,9 +123,14 @@ def load_yaml(path):
 
 
 def tasks(path):
-    """All tasks of a task file (or a list of tasks), including those inside blocks."""
+    """All tasks of a task file (or a list of tasks), including those inside blocks
+    (their block, rescue and always sections)."""
     task_list = load_yaml(path) if isinstance(path, str) else path
-    return [t for task in task_list or [] for t in [task, *task.get("block", [])]]
+    return [
+        t
+        for task in task_list or []
+        for t in [task, *task.get("block", []), *task.get("rescue", []), *task.get("always", [])]
+    ]
 
 
 def play():

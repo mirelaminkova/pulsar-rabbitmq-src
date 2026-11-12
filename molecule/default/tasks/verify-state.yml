@@ -1,0 +1,26 @@
+---
+# The state file the deployment writes for the welcome page (tasks/pulsar.yml): root-only
+# readable by the pulsar group, with the expected state and message.
+- name: Find the broker connection state file
+  ansible.builtin.stat:
+    path: /opt/pulsar/config/byoc-state.json
+  register: _state_file
+
+- name: Read the broker connection state file
+  ansible.builtin.slurp:
+    src: /opt/pulsar/config/byoc-state.json
+  register: _state_content
+
+- name: "The state is {{ expected_state }}"
+  vars:
+    state: "{{ _state_content.content | b64decode | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - _state_file.stat.pw_name == 'root'
+      - _state_file.stat.gr_name == 'pulsar'
+      - _state_file.stat.mode == '0640'
+      - state.state == expected_state
+      - expected_message in state.message
+      - state.checked_at is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')
+      - state | length == 3
+    fail_msg: "{{ state | to_json }} ({{ _state_file.stat.pw_name }}:{{ _state_file.stat.gr_name }} {{ _state_file.stat.mode }})"

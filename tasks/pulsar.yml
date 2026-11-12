@@ -166,6 +166,17 @@
     group: root
     mode: '0755'
 
+# pulsar-main keeps running without consumers when a consumer thread quits on a refused
+# login (no BYOC account yet); the launcher exits instead, and the unit restarts Pulsar.
+- name: Install the Pulsar launcher
+  ansible.builtin.copy:
+    src: files/pulsar_main.py
+    dest: "{{ pulsar_main_script }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart Pulsar
+
 # Before the tasks that can fail: force_handlers then restarts an existing unit.
 - name: Install the Pulsar systemd unit
   ansible.builtin.template:
@@ -203,7 +214,9 @@
 
 # Pulsar declares and consumes its setup queue when it has logged in; a consumer
 # on it proves the login, the vhost and the TLS settings. Exit status 75 means
-# "not yet" and is retried (about two minutes); any other failure stops at once.
+# "not yet" and is retried (about two minutes); 0 is connected, 3 waiting (the BYOC
+# account does not exist until byoc-sync's pull request is merged and deployed: the
+# normal case on a first deployment), anything else an error.
 - name: Check that Pulsar consumes its setup queue on Galaxy's broker
   ansible.builtin.command:
     argv:
@@ -216,11 +229,48 @@
   delay: 5
   changed_when: false
   failed_when: false
-  # CI's live Slurm check has no Galaxy broker and skips these two.
+  # Exhausted retries fail the task regardless of failed_when: the outcome below then
+  # records the error and fails with the check's message instead.
+  ignore_errors: true
+  # CI's live Slurm check has no Galaxy broker and skips the check and its outcome.
   tags: [broker-check]
 
-- name: Fail when Pulsar cannot use Galaxy's broker
-  ansible.builtin.fail:
-    msg: "{{ _pulsar_amqp_check.stdout | default('', true) }} {{ _pulsar_amqp_check.stderr | default('', true) | trim }}"
-  when: _pulsar_amqp_check.rc != 0
+# The state for the welcome page (templated after this, also when the deployment fails)
+# and the play's output; only an error fails the deployment. Not in check mode, where the
+# check does not run.
+- name: Record the outcome of the broker check
   tags: [broker-check]
+  when: _pulsar_amqp_check.rc is defined
+  block:
+    - name: Record the broker connection state
+      ansible.builtin.set_fact:
+        _pulsar_byoc_state:
+          state: >-
+            {{ 'connected' if _pulsar_amqp_check.rc == 0
+               else 'waiting' if _pulsar_amqp_check.rc == 3 else 'error' }}
+          # The check's line; when the check itself broke, the last line of its traceback.
+          message: >-
+            {{ ((_pulsar_amqp_check.stdout_lines | default([]) | select | list)
+                + (_pulsar_amqp_check.stderr_lines | default([]) | select | reverse | list)
+                + ['']) | first }}
+          checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Write the broker connection state file
+      ansible.builtin.copy:
+        content: "{{ _pulsar_byoc_state | to_nice_json }}\n"
+        dest: "{{ pulsar_byoc_state_file }}"
+        owner: root
+        group: "{{ pulsar_user }}"
+        mode: '0640'
+      # checked_at changes with every run: the file reports the check, it is no
+      # configuration change (a rerun must change nothing).
+      changed_when: false
+
+    - name: Show the broker connection state
+      ansible.builtin.debug:
+        msg: "BYOC connection {{ _pulsar_byoc_state.state }}: {{ _pulsar_byoc_state.message }}"
+
+    - name: Fail when Pulsar cannot use Galaxy's broker
+      ansible.builtin.fail:
+        msg: "{{ _pulsar_byoc_state.message }}"
+      when: _pulsar_byoc_state.state == 'error'

@@ -1,5 +1,6 @@
 """Structure of the playbook, parameters and templates: secrets, ordering, removed relay code."""
 
+import json
 import re
 
 import pytest
@@ -180,24 +181,150 @@ def test_pulsar_installed_with_amqp_support():
     assert resolve("pulsar_version") == "0.15.15"
 
 
-def test_connection_check_after_restart_and_fails_clearly():
+def test_connection_check_after_restart_records_the_state():
     names = [t.get("name") for t in tasks("tasks/pulsar.yml")]
     check = task_named(
         tasks("tasks/pulsar.yml"),
         "Check that Pulsar consumes its setup queue on Galaxy's broker",
     )
+    outcome = task_named(tasks("tasks/pulsar.yml"), "Record the outcome of the broker check")
+    state = task_named(tasks("tasks/pulsar.yml"), "Record the broker connection state")
+    write = task_named(tasks("tasks/pulsar.yml"), "Write the broker connection state file")
     report = task_named(tasks("tasks/pulsar.yml"), "Fail when Pulsar cannot use Galaxy's broker")
 
     assert names.index("Apply pending Pulsar restarts before checking the connection") < (
         names.index(check["name"])
     )
-    assert names.index(report["name"]) == names.index(check["name"]) + 1
     argv = check["ansible.builtin.command"]["argv"]
     assert argv[0] == "{{ pulsar_venv }}/bin/python"
     assert argv[1:] == ["{{ pulsar_check_script }}", "{{ pulsar_config_dir }}/app.yml"]
     assert check["until"] == "_pulsar_amqp_check.rc != 75"  # check_amqp.RETRY
-    assert "_pulsar_amqp_check.stdout" in report["ansible.builtin.fail"]["msg"]
-    assert report["when"] == "_pulsar_amqp_check.rc != 0"
+    assert check["failed_when"] is False
+    # Exhausted retries (an unreachable broker) fail the task despite failed_when.
+    assert check["ignore_errors"] is True
+    # The outcome's tasks are skipped with the check (CI's Slurm live check, check mode).
+    assert outcome["tags"] == check["tags"] == ["broker-check"]
+    assert outcome["when"] == "_pulsar_amqp_check.rc is defined"
+    assert [t["name"] for t in outcome["block"]] == [
+        state["name"],
+        write["name"],
+        "Show the broker connection state",
+        report["name"],
+    ]
+    assert report["ansible.builtin.fail"]["msg"] == "{{ _pulsar_byoc_state.message }}"
+    assert report["when"] == "_pulsar_byoc_state.state == 'error'"
+
+
+def test_state_file_is_root_readable_by_pulsar_and_not_a_change():
+    write = task_named(tasks("tasks/pulsar.yml"), "Write the broker connection state file")
+    module = write["ansible.builtin.copy"]
+
+    assert resolve_text(module["dest"]) == "/opt/pulsar/config/byoc-state.json"
+    assert (module["owner"], resolve_text(module["group"]), module["mode"]) == (
+        "root",
+        "pulsar",
+        "0640",
+    )
+    # checked_at changes with every run: the file reports the check, no configuration change.
+    assert write["changed_when"] is False
+
+
+def check_result(rc, stdout="", stderr=""):
+    return {
+        "rc": rc,
+        "stdout": stdout,
+        "stdout_lines": stdout.splitlines(),
+        "stderr": stderr,
+        "stderr_lines": stderr.splitlines(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("result", "state", "message"),
+    [
+        (
+            check_result(0, "Pulsar consumes q in vhost v on h.\n"),
+            "connected",
+            "Pulsar consumes q in vhost v on h.",
+        ),
+        (
+            check_result(3, "RabbitMQ on h refused the login of user u: ...\n"),
+            "waiting",
+            "RabbitMQ on h refused the login of user u: ...",
+        ),
+        (
+            check_result(1, "Cannot resolve h: check pulsar_amqp_host.\n"),
+            "error",
+            "Cannot resolve h: check pulsar_amqp_host.",
+        ),
+        # After the retries: still exit 75 (unreachable broker).
+        (
+            check_result(75, "Cannot reach RabbitMQ on h (TimeoutError): ...\n"),
+            "error",
+            "Cannot reach RabbitMQ on h (TimeoutError): ...",
+        ),
+        # The check itself broke: Python's last line of the traceback.
+        (
+            check_result(
+                1, "", "Traceback (most recent call last):\n  File x\nKeyError: 'managers'\n"
+            ),
+            "error",
+            "KeyError: 'managers'",
+        ),
+        (check_result(127), "error", ""),
+    ],
+    ids=["connected", "waiting", "error", "retries-exhausted", "traceback", "no-output"],
+)
+def test_state_from_the_check_result(result, state, message):
+    task = task_named(tasks("tasks/pulsar.yml"), "Record the broker connection state")
+    fact = task["ansible.builtin.set_fact"]["_pulsar_byoc_state"]
+
+    recorded = {key: resolve_text(value, _pulsar_amqp_check=result) for key, value in fact.items()}
+
+    assert recorded["state"] == state
+    assert recorded["message"] == message
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", recorded["checked_at"])
+    assert PASSWORD not in str(recorded)
+
+
+def test_state_file_content_is_the_state(tmp_path):
+    write = task_named(tasks("tasks/pulsar.yml"), "Write the broker connection state file")
+    state = {"state": "waiting", "message": "m", "checked_at": "2026-11-12T13:00:00Z"}
+
+    content = resolve_text(write["ansible.builtin.copy"]["content"], _pulsar_byoc_state=state)
+
+    assert json.loads(content) == state
+    assert content.endswith("\n")
+
+
+def test_state_is_unknown_until_the_check_ran():
+    # The welcome page is templated with the fact; a skipped check leaves the default.
+    assert resolve("_pulsar_byoc_state") == {"state": "unknown", "message": "", "checked_at": ""}
+
+
+def test_welcome_page_is_templated_after_the_state_and_also_on_failure():
+    play_tasks = play()["tasks"]
+    [install] = [t for t in play_tasks if "always" in t]
+    [template] = [t for t in install["always"] if "ansible.builtin.template" in t]
+
+    # Slurm and Pulsar: a failure in either still leaves the page.
+    assert [t["ansible.builtin.include_tasks"] for t in install["block"]] == [
+        "tasks/slurm.yml",
+        "tasks/pulsar.yml",
+    ]
+    assert template["ansible.builtin.template"]["src"] == "templates/welcome.html.j2"
+    assert template["ansible.builtin.template"]["dest"] == "{{ pulsar_welcome_dir }}/index.html"
+    assert template["when"] == "pulsar_configure_src_proxy | bool"
+    assert (template.get("no_log"), template.get("diff")) == (True, False)
+    # The directory and the proxy come first; the page only once, with the state.
+    names = [t.get("name") for t in tasks(play_tasks)]
+    assert names.index("Create the welcome page directory") < names.index(install["name"])
+    assert sum("ansible.builtin.template" in t for t in tasks(play_tasks)) == 1
+    # In tasks/pulsar.yml the state is set before the failure the page must survive.
+    pulsar_names = [t.get("name") for t in tasks("tasks/pulsar.yml")]
+    assert pulsar_names.index("Record the broker connection state") < pulsar_names.index(
+        "Fail when Pulsar cannot use Galaxy's broker"
+    )
 
 
 # Directories: the pulsar user (and so any job) must not be able to redirect root's
@@ -474,4 +601,37 @@ def test_service_runs_pulsar_main_as_pulsar():
     unit = render("pulsar.service.j2")
 
     assert "User=pulsar" in unit
-    assert re.search(r"^ExecStart=/opt/pulsar/venv/bin/pulsar-main ", unit, re.M)
+    # files/pulsar_main.py runs pulsar-main and exits when a broker consumer dies.
+    assert re.search(
+        r"^ExecStart=/opt/pulsar/venv/bin/python -I /opt/pulsar/pulsar_main.py "
+        r"--config_dir /opt/pulsar/config --ini_path /opt/pulsar/config/server.ini$",
+        unit,
+        re.M,
+    )
+
+
+def unit_section(unit, name):
+    section = unit.split(f"[{name}]\n", 1)[1].split("\n[", 1)[0]
+    return [line for line in section.splitlines() if line and not line.startswith("#")]
+
+
+def test_service_keeps_retrying_a_refused_login():
+    # A refused login (no BYOC account yet) exits Pulsar: restarted every 30 s, forever.
+    unit = render("pulsar.service.j2")
+
+    assert "StartLimitIntervalSec=0" in unit_section(unit, "Unit")
+    service = unit_section(unit, "Service")
+    assert "Restart=always" in service
+    assert "RestartSec=30" in service
+
+
+def test_launcher_is_installed_before_the_unit_and_restarts_pulsar():
+    names = [t.get("name") for t in tasks("tasks/pulsar.yml")]
+    launcher = task_named(tasks("tasks/pulsar.yml"), "Install the Pulsar launcher")
+    module = launcher["ansible.builtin.copy"]
+
+    assert names.index(launcher["name"]) < names.index("Install the Pulsar systemd unit")
+    assert module["src"] == "files/pulsar_main.py"
+    assert resolve_text(module["dest"]) == "/opt/pulsar/pulsar_main.py"
+    assert (module["owner"], module["group"], module["mode"]) == ("root", "root", "0755")
+    assert launcher["notify"] == "Restart Pulsar"

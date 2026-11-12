@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from tests.byoc_contract.validate import FIELDS
+from tests.byoc_contract.validate import FIELDS as FORM_FIELDS
 from tests.helpers import (
     FACTS,
     PASSWORD,
@@ -242,8 +242,7 @@ def test_unit_is_installed_before_tasks_that_can_fail():
 
 # Templates: the welcome page (templates/welcome.html.j2)
 
-# byoc-sync's byoc_pulsar form, in its order (vendored, checked against byoc-sync's main).
-FORM_FIELDS = FIELDS
+# FORM_FIELDS: byoc-sync's byoc_pulsar form, in its order (vendored, checked against its main).
 FORM_UNITS = {"max_accepted_mem": "GB"}
 # The state's tag and the text next to it; for error, the check's message (MESSAGE).
 MESSAGE = "the broker refused the connection"
@@ -333,26 +332,25 @@ def test_welcome_page_shows_an_error_without_a_message():
 
 
 @pytest.mark.parametrize(
-    "state",
+    "params",
     [byoc_state("mystery"), byoc_state("Connected"), {"_pulsar_byoc_state": {}}]
     + [{"_pulsar_byoc_state": value} for value in (None, "", '{"state": "connected"}', [])],
     ids=repr,
 )
-def test_welcome_page_treats_an_unexpected_or_malformed_state_as_unknown(state):
+def test_welcome_page_treats_an_unexpected_or_malformed_state_as_unknown(params):
     # A state file from an earlier version must never break the deployment.
-    page = render("welcome.html.j2", **state)
+    page = render("welcome.html.j2", **params)
     assert '<span class="state state-unknown">Not checked yet</span>' in page
     assert "state-connected" not in page[page.index("<body>") :]
 
 
-@pytest.mark.parametrize(
-    ("state", "checked_at"), [("connected", "2026-11-12T10:00:00Z"), ("waiting", "")]
-)
-def test_welcome_page_shows_when_the_state_was_checked(state, checked_at):
-    page = render("welcome.html.j2", **byoc_state(state, checked_at=checked_at))
-    assert ("checked at <code>" in page) == bool(checked_at)
-    if checked_at:
-        assert f"checked at <code>{checked_at}</code>" in page
+@pytest.mark.parametrize("state", list(STATE_TAGS))
+def test_welcome_page_leaves_the_check_time_off(state):
+    # checked_at changes every run; a page with it would make the template task change on
+    # every rerun (molecule's idempotence step, the Slurm live rerun check).
+    page = render("welcome.html.j2", **byoc_state(state, checked_at="2026-11-12T10:00:00Z"))
+    assert "2026-11-12" not in page
+    assert "checked at" not in page
 
 
 def test_welcome_page_shows_not_checked_yet_by_default():
@@ -457,7 +455,6 @@ ESCAPED_XSS = "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
         {"_pulsar_slurm_cpus": XSS},
         {"_pulsar_slurm_memory_mb": XSS},
         byoc_state("error", message=XSS),
-        byoc_state("connected", checked_at=XSS),
         {"_pulsar_byoc_form": dict.fromkeys(set(FORM_FIELDS) - {"password"}, XSS)},
     ],
     ids=lambda params: "+".join(params),

@@ -23,19 +23,19 @@ jobs:
       - name: Validate Ansible syntax
         run: ansible-playbook -i localhost, playbook.yml --syntax-check
 
-  # The vendored Galaxy parser and template (tests/galaxy_contract/) must still be the
-  # Galaxy component's: a failure here means the contract changed upstream.
-  galaxy-contract:
+  # The vendored byoc-sync files (tests/byoc_contract/) must still be byoc-sync's: a
+  # failure here means the contract changed upstream.
+  byoc-contract:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Check out the Galaxy component
+      - name: Check out byoc-sync
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          repository: mirelaminkova/src-component-galaxy-amqp
-          path: .galaxy-amqp
+          repository: sanjaysrikakulam/elixir_biohackathon_2026_project1
+          path: .byoc-sync
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
@@ -46,10 +46,10 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       # --no-cov: one test module cannot reach the coverage gate, which checks.yml enforces.
       # The comparison must run here, never skip: fail on any SKIPPED.
-      - name: Compare the vendored contract files with the Galaxy component
+      - name: Compare the vendored contract files with byoc-sync
         shell: bash  # explicit bash runs with -eo pipefail: tee cannot hide a failure
         env:
-          GALAXY_AMQP_REPO: .galaxy-amqp
+          BYOC_SYNC_REPO: .byoc-sync
         run: |
-          pytest tests/test_galaxy_contract.py --no-cov -v -rs | tee "$RUNNER_TEMP/contract.log"
+          pytest tests/test_byoc_contract.py --no-cov -v -rs | tee "$RUNNER_TEMP/contract.log"
           ! grep -q SKIPPED "$RUNNER_TEMP/contract.log"

@@ -35,7 +35,7 @@ def test_runs_a_job_through_the_manager_without_a_broker(app_yml, monkeypatch, t
 
     result = pulsar_job.run_job(str(app_yml), container="galaxy_live-1", timeout=60, poll=0.1)
 
-    assert (result["manager"], result["manager_type"]) == ("_default_", "queued_python")
+    assert (result["manager"], result["manager_type"]) == ("production", "queued_python")
     assert (result["status"], result["return_code"]) == ("complete", 0)
     assert result["user"] == getpass.getuser()
     assert result["slurm_job"] == "none"
@@ -56,7 +56,7 @@ def test_app_conf_leaves_the_broker_out(app_yml):
     assert "message_queue_url" not in conf
     assert not [key for key in conf if key.startswith("amqp_")]
     assert conf["persistence_directory"] == "/elsewhere"
-    assert conf["managers"]["_default_"]["type"] == "queued_python"
+    assert conf["managers"]["production"]["type"] == "queued_python"
 
 
 def test_main_reports_the_result(app_yml, monkeypatch, tmp_path, capsys):

@@ -26,7 +26,7 @@
     state: present
 
 # Galaxy resolves the container image and builds the `singularity exec` command;
-# its src_galaxy_pulsar_amqp_configs entries have no singularity_volumes key.
+# usegalaxy.eu's BYOC destinations set no singularity_volumes.
 # Binding /cvmfs system-wide gives every container the reference data that
 # Galaxy's tool data tables refer to.
 - name: Bind /cvmfs into every Apptainer container

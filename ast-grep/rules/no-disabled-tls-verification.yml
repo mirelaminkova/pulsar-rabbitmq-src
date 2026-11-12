@@ -8,7 +8,7 @@ note: >-
   certificate and hostname verification (app.yml amqp_connect_ssl_*) anyone on
   the path could impersonate the broker and collect the password and the jobs.
 ignores:
-  - tests/galaxy_contract/**  # vendored from the Galaxy component
+  - tests/byoc_contract/**  # vendored from byoc-sync
 rule:
   any:
     - pattern: ssl.CERT_NONE

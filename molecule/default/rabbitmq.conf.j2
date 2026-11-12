@@ -1,0 +1,15 @@
+# Molecule's test broker: a Galaxy's RabbitMQ as BYOC Pulsars see it (usegalaxy.eu's
+# mq.galaxyproject.eu): AMQPS only, with a certificate for its hostname.
+listeners.tcp = none
+listeners.ssl.default = {{ molecule_rabbitmq_port }}
+ssl_options.cacertfile = {{ molecule_rabbitmq_tls_dir }}/fullchain.pem
+ssl_options.certfile = {{ molecule_rabbitmq_tls_dir }}/fullchain.pem
+ssl_options.keyfile = {{ molecule_rabbitmq_tls_dir }}/key.pem
+ssl_options.verify = verify_none
+ssl_options.fail_if_no_peer_cert = false
+{% for version in molecule_rabbitmq_tls_versions %}
+ssl_options.versions.{{ loop.index }} = {{ version }}
+{% endfor %}
+
+# Erlang distribution (used by rabbitmqctl) only on the loopback interface.
+distribution.listener.interface = 127.0.0.1

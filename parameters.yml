@@ -1,32 +1,29 @@
 ---
-# Defaults for SRC component parameters (strings, as SRC passes them). Each one
-# matches a value of this Pulsar's entry in the Galaxy component's
-# src_galaxy_pulsar_amqp_configs (mirelaminkova/src-component-galaxy-amqp).
-# Galaxy workspace hostname, e.g. galaxy.example.org (no https://). Required.
-pulsar_galaxy_fqdn: ""
-# RabbitMQ hostname when the broker is not the Galaxy workspace (usegalaxy.eu:
-# mq.galaxyproject.eu). Empty: pulsar_galaxy_fqdn.
-pulsar_amqp_host: ""
-# Galaxy's src_galaxy_rabbitmq_port.
+# Defaults for SRC component parameters (strings, as SRC passes them), for a BYOC Pulsar
+# of the byoc-sync pipeline (sanjaysrikakulam/elixir_biohackathon_2026_project1), with
+# usegalaxy.eu's values.
+# The Galaxy's RabbitMQ hostname, as in its TLS certificate (no https://).
+pulsar_amqp_host: mq.galaxyproject.eu
+# Its AMQPS port.
 pulsar_amqp_port: "5671"
-# The entry's name. Required.
+# The BYOC name (the form's username): 3 to 32 of a-z 0-9 _, starting with a letter, not
+# ending in _ or _byoc, without __. Empty: generated and kept on the storage volume.
 pulsar_amqp_name: ""
-# The entry's password: at least 12 of A-Z a-z 0-9 . _ ~ -. Required; mark it as secret.
+# The form's password: 10 to 128 letters and digits. Empty: generated and kept with the name.
 pulsar_amqp_password: ""
-# The entry's manager.
-pulsar_manager: _default_
+# The manager byoc-sync's runner uses.
+pulsar_manager: production
 # The workspace's attached storage volume: its mount point /data/<volume name> (Pulsar then
 # uses /data/<volume name>/pulsar) or a directory on it. Required. Pulsar keeps all its data
-# there; the entry's jobs_directory is <storage directory>/staging.
+# there; it is the form's nfs_path (Galaxy's jobs_directory is <storage directory>/staging).
 pulsar_storage_path: ""
 # Mount the Galaxy CVMFS repositories (reference data). "false" leaves CVMFS out.
 pulsar_cvmfs: "true"
-# "false" leaves Apptainer out; the Galaxy entry then has no singularity_enabled.
+# "false" leaves Apptainer out.
 pulsar_apptainer: "true"
 # "true" installs Docker and adds the pulsar user to the docker group (root-equivalent).
 pulsar_docker: "false"
 # "slurm" runs jobs through Slurm (DRMAA) on this workspace; "local" in Pulsar itself.
 pulsar_job_runner: slurm
-# Seconds before Pulsar republishes an unacknowledged message: 1200 for the Galaxy
-# component's runner, 300 for usegalaxy.eu's.
-pulsar_amqp_ack_republish_time: "1200"
+# Seconds before Pulsar republishes an unacknowledged message: 300, as byoc-sync's runner.
+pulsar_amqp_ack_republish_time: "300"

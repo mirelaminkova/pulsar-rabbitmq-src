@@ -9,7 +9,7 @@ note: >-
   Lines inside Jinja {% %} blocks do not parse as YAML and are not checked;
   the pytest tests check the rendered app.yml.
 ignores:
-  - tests/galaxy_contract/**  # vendored from the Galaxy component
+  - tests/byoc_contract/**  # vendored from byoc-sync
 rule:
   kind: block_mapping_pair
   all:

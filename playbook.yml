@@ -1,12 +1,13 @@
 ---
-- name: Install Pulsar for the Galaxy component's RabbitMQ on SURF Research Cloud
+- name: Install a BYOC Pulsar for a Galaxy's RabbitMQ on SURF Research Cloud
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   become: true
   # Restart Pulsar for a changed app.yml or venv even when a later task fails; a rerun
   # would not see the change again and would leave the old Pulsar running.
   force_handlers: true
   pre_tasks:
-    # The rules of the Galaxy component's parser, in filter_plugins/pulsar_amqp.py.
+    # byoc-sync's rules, in filter_plugins/pulsar_amqp.py; an empty name or password is
+    # generated below.
     - name: Validate the component parameters
       ansible.builtin.assert:
         that: _pulsar_amqp_errors | length == 0
@@ -44,6 +45,10 @@
     - name: Check and prepare the attached storage
       ansible.builtin.include_tasks: tasks/storage.yml
 
+    # On the storage, so after it: from here on _pulsar_amqp has the name and password.
+    - name: Load or create this Pulsar's BYOC credentials
+      ansible.builtin.include_tasks: tasks/credentials.yml
+
     - name: Check SRC nginx prerequisite
       ansible.builtin.stat:
         path: /etc/nginx/app-location-conf.d/authentication.conf
@@ -79,7 +84,7 @@
             group: www-data
             mode: '0750'
 
-        - name: Template the welcome page with the Galaxy parameter
+        - name: Template the welcome page with the BYOC form
           ansible.builtin.template:
             src: templates/welcome.html.j2
             dest: "{{ pulsar_welcome_dir }}/index.html"
@@ -98,7 +103,7 @@
       ansible.builtin.include_tasks: tasks/slurm.yml
       when: _pulsar_slurm | bool
 
-    # After the welcome page, so its Galaxy entry is available when the broker check fails.
+    # After the welcome page, so the BYOC form is available when the broker check fails.
     - name: Install Pulsar and connect it to Galaxy's RabbitMQ
       ansible.builtin.include_tasks: tasks/pulsar.yml
 

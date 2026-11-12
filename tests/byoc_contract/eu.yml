@@ -1,0 +1,48 @@
+# Site configuration for usegalaxy.eu's infrastructure-playbook.
+# Paths are relative to the playbook checkout; "path" is where the collection lives inside the file.
+section: byoc_pulsar
+user_preferences_file: files/galaxy/config/user_preferences_extra_conf.yml
+base_branch: master
+templates: eu
+site:
+  mq_host: mq.galaxyproject.eu
+  mq_port: 5671
+  galaxy_url: https://usegalaxy.eu
+naming:
+  mq_user: galaxy_{x}_byoc
+  vhost: /pulsar/galaxy_{x}_byoc
+  vault_var: rabbitmq_password_galaxy_{x}_byoc
+  runner_id: pulsar_eu_{x}_byoc
+  destination_id: pulsar_{x}_byoc_tpv
+  tag: "{x_dash}-byoc-pulsar"
+  rule_id: byoc-pulsar-{x_dash}
+  branch: "{x}_byoc_ci"
+targets:
+  mq:
+    file: group_vars/mq.yml
+    path: [rabbitmq_users]
+    field: user
+    id: mq_user
+    template: mq_user.yml.j2
+    anchor: "^galaxy_"
+  job_conf:
+    file: templates/galaxy/config/job_conf.yml
+    path: [galaxy_jobconf, plugins]
+    field: id
+    id: runner_id
+    template: runner.yml.j2
+    anchor: "^pulsar_eu_"
+  destinations:
+    file: files/galaxy/tpv/destinations.yml.j2
+    path: [destinations]
+    id: destination_id
+    template: destination.yml.j2
+    anchor: "^pulsar_"
+  users:
+    file: files/galaxy/tpv/users.yml
+    path: [users]
+    id: email_key
+    template: user.yml.j2
+    anchor: "$^"
+vault:
+  file: secret_group_vars/pulsar.yml

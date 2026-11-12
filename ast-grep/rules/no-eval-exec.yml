@@ -8,7 +8,7 @@ note: >-
   which carries the broker password, as root. Parse values explicitly (int(),
   yaml.safe_load(), a lookup table).
 ignores:
-  - tests/galaxy_contract/**  # vendored from the Galaxy component
+  - tests/byoc_contract/**  # vendored from byoc-sync
 rule:
   kind: call
   has:

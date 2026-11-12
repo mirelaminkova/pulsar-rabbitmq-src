@@ -5,12 +5,10 @@ import re
 
 import pytest
 
-from tests.galaxy_contract import src_galaxy
 from tests.helpers import (
     FACTS,
     PASSWORD,
     REPO,
-    facts,
     load_yaml,
     play,
     render,
@@ -253,21 +251,94 @@ def test_welcome_page_shows_the_galaxy_entry():
 
     assert f'<pre id="galaxy-amqp-param">{html.escape(entry)}</pre>' in page
     assert "src_galaxy_pulsar_amqp_configs" in page
-    tools = re.search(r'<pre id="galaxy-amqp-tools">([^<]*)</pre>', page).group(1)
-    assert {m["environment"] for m in src_galaxy.src_config_list(tools, "tool mappings")} == {
-        "amqp_hpc"
-    }
-    assert "src_galaxy_rabbitmq" in page
-    # Galaxy's preferences list the entry by its label, which defaults to the name.
-    assert "choosing <code>hpc</code>" in page
+    # The one thing the Galaxy side must do besides pasting the entry.
+    assert "security group" in page
+    assert "<code>5671</code>" in page
+
+
+def test_welcome_page_shows_the_broker_version_and_storage():
+    page = render("welcome.html.j2")
+
+    assert "<code>amqps://galaxy.example.org:5671</code>, user <code>hpc</code>" in page
+    assert "vhost <code>/pulsar/hpc</code>" in page
+    assert "0.15.15 on <code>pulsar.example.org</code>" in page
+    assert "<code>/data/pulsar_storage/pulsar</code>" in page
+    assert "<code>/data/pulsar_storage/pulsar/staging</code>" in page
+
+
+def test_welcome_page_shows_the_broker_host_when_it_differs_from_galaxy():
+    # The broker-host change (#17) adds a `host` key; the page must work with and without it.
+    amqp = resolve("_pulsar_amqp")
+    page = render("welcome.html.j2", _pulsar_amqp={**amqp, "host": "mq.example.org"})
+    assert "<code>amqps://mq.example.org:5671</code>" in page
+    assert "amqps://galaxy.example.org" not in page
+    # An unset parameter is an empty string: the Galaxy host then.
+    page = render("welcome.html.j2", _pulsar_amqp={**amqp, "host": ""})
+    assert "<code>amqps://galaxy.example.org:5671</code>" in page
+
+
+def test_welcome_page_shows_the_troubleshooting_commands():
+    page = render("welcome.html.j2")
+
+    assert "systemctl status pulsar" in page
+    assert "journalctl -u pulsar -f" in page
+    assert (
+        "sudo /opt/pulsar/venv/bin/python /opt/pulsar/check_amqp.py /opt/pulsar/config/app.yml"
+        in page
+    )
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "Deployment settings",
+        "galaxy-amqp-tools",
+        "Important Notes",
+        'class="flow"',
+        "How Galaxy and Pulsar connect",
+    ],
+)
+def test_welcome_page_no_longer_has_the_reference_manual_sections(section):
+    assert section not in render("welcome.html.j2")
+
+
+@pytest.mark.parametrize("runner", ["slurm", "local"])
+@pytest.mark.parametrize("docker", ["true", "false"])
+@pytest.mark.parametrize("apptainer", ["true", "false"])
+@pytest.mark.parametrize("cvmfs", ["true", "false"])
+def test_welcome_page_renders_for_every_combination(runner, docker, apptainer, cvmfs):
+    page = render(
+        "welcome.html.j2",
+        pulsar_job_runner=runner,
+        pulsar_docker=docker,
+        pulsar_apptainer=apptainer,
+        pulsar_cvmfs=cvmfs,
+    )
+
+    # trim_blocks (ansible.builtin.template's setting) eats the {% set %} lines.
+    assert page.startswith("<!doctype html>")
+    assert page.rstrip().endswith("</html>")
+    assert ("<code>queued_drmaa</code>" in page) == (runner == "slurm")
+    assert ("<code>queued_python</code>" in page) == (runner == "local")
+    assert ('<li class="tag">Docker</li>' in page) == (docker == "true")
+    assert ('<li class="tag">Apptainer</li>' in page) == (apptainer == "true")
+    assert ('<li class="tag">CVMFS</li>' in page) == (cvmfs == "true")
+    assert page.count(PASSWORD) == 1
+
+
+def test_welcome_page_keeps_the_notice_and_noindex():
+    page = render("welcome.html.j2")
+    assert '<meta name="robots" content="noindex">' in page
+    assert "RabbitMQ password" in page
+    assert "members" in page
 
 
 def test_welcome_page_shows_the_galaxy_host_as_the_broker():
-    page = render("welcome.html.j2")
+    # pulsar_amqp_host unset (an empty string from SRC): the broker is the Galaxy host.
+    page = render("welcome.html.j2", pulsar_amqp_host="")
 
-    assert "amqps://galaxy.example.org:5671" in page
-    assert "Galaxy runs RabbitMQ" in page
-    assert "pulsar_amqp_host" not in page
+    assert "<code>amqps://galaxy.example.org:5671</code>" in page
+    assert page == render("welcome.html.j2")
 
 
 def test_welcome_page_shows_a_separate_broker_host():
@@ -275,13 +346,10 @@ def test_welcome_page_shows_a_separate_broker_host():
         "welcome.html.j2", pulsar_galaxy_fqdn="usegalaxy.eu", pulsar_amqp_host="mq.galaxyproject.eu"
     )
 
-    assert "amqps://mq.galaxyproject.eu:5671" in page
+    assert "<code>amqps://mq.galaxyproject.eu:5671</code>" in page
     assert "amqps://usegalaxy.eu" not in page
-    assert "RabbitMQ on mq.galaxyproject.eu:5671" in page
-    assert "Galaxy runs RabbitMQ" not in page
-    assert "skip this section" in page
-    # Galaxy's own name still identifies it and its entry.
-    assert "<code>usegalaxy.eu</code> must have this Pulsar" in page
+    # Galaxy's own name still identifies the workspace the entry belongs to.
+    assert "the Galaxy workspace <code>usegalaxy.eu</code>" in page
 
 
 def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
@@ -289,14 +357,21 @@ def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
     assert "checked that" not in render("welcome.html.j2")
 
 
-def test_welcome_page_escapes_values():
-    page = render("welcome.html.j2", **facts(hostname="<b>x</b>"))
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "workspace_fqdn",
+        "pulsar_manager",
+        "pulsar_amqp_name",
+        "pulsar_galaxy_fqdn",
+        "pulsar_version",
+    ],
+)
+def test_welcome_page_escapes_values(variable):
+    # Most of these are validated before the page is written; the template escapes anyway.
+    page = render("welcome.html.j2", **{variable: "<b>x</b>"})
     assert "<b>x</b>" not in page
-
-
-def test_welcome_page_contains_the_password_only_in_the_entry():
-    page = render("welcome.html.j2")
-    assert page.count(PASSWORD) == 1
+    assert "&lt;b&gt;x&lt;/b&gt;" in page
 
 
 def test_service_runs_pulsar_main_as_pulsar():

@@ -477,13 +477,17 @@ def test_welcome_page_describes_slurm():
 
     assert "Slurm" in page
     assert "<code>queued_drmaa</code>" in page
-    assert "4 CPUs and 14400 MB" in page
-    for command in ("squeue", "scontrol show job", "sinfo"):
+    assert "4 CPUs" in page
+    assert "14400 MB" in page
+    for command in ("squeue", "scancel"):
         assert command in page
+    # The Slurm reference (scontrol, sinfo, epilog, accounting) lives in the README now.
+    assert "sacct" not in page
 
 
 def test_welcome_page_describes_the_local_runner():
     page = render("welcome.html.j2", pulsar_job_runner="local")
 
+    assert "<code>queued_python</code>" in page
     assert "3 concurrent jobs" in page
     assert "squeue" not in page

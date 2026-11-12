@@ -5,6 +5,7 @@ The playbook's filter plugins (``filter_plugins/``) are registered like
 templates are tested together.
 """
 
+import html
 from pathlib import Path
 
 import yaml
@@ -85,6 +86,19 @@ def render(template, **params):
     text = (REPO / "templates" / template).read_text()
     env = templar(**params).copy_with_new_env(trim_blocks=True)
     return env.do_template(text, preserve_trailing_newlines=True, escape_backslashes=False)
+
+
+def form_row(field, value, unit=""):
+    """The welcome page's row for a ``byoc_pulsar`` form field: the value in a <code> the
+    Copy button copies, the unit (if any) outside it. ``value`` is escaped as the template
+    escapes it."""
+    escaped = html.escape(str(value), quote=False)
+    return (
+        f"<dt>{field}</dt>\n"
+        f'        <dd><code id="byoc-{field}">{escaped}</code>'
+        f' <button class="copy-btn" type="button" onclick="copyValue(\'byoc-{field}\', this)">'
+        f"Copy</button>{' ' + unit if unit else ''}</dd>"
+    )
 
 
 def render_yaml(template, **params):

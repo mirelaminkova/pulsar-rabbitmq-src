@@ -1,11 +1,11 @@
 # Pulsar for Galaxy's RabbitMQ on SURF Research Cloud
 
-An SRC Ansible component that installs [Pulsar](https://github.com/galaxyproject/pulsar) as an AMQP **client** of the RabbitMQ broker that the Galaxy component [src-component-galaxy-amqp](https://github.com/mirelaminkova/src-component-galaxy-amqp) runs on the Galaxy workspace (`src_galaxy_rabbitmq: true`, `src_galaxy_pulsar_amqp_configs`). Supports Ubuntu 22.04 and 24.04.
+An SRC Ansible component that installs [Pulsar](https://github.com/galaxyproject/pulsar) as an AMQP **client** of the RabbitMQ broker that the Galaxy component [src-component-galaxy-amqp](https://github.com/mirelaminkova/src-component-galaxy-amqp) runs on the Galaxy workspace (`src_galaxy_rabbitmq: true`, `src_galaxy_pulsar_amqp_configs`), or of a broker on another host such as usegalaxy.eu's [Pulsar Network](#usegalaxyeus-pulsar-network) (`pulsar_amqp_host`). Supports Ubuntu 22.04 and 24.04.
 
-No broker runs on this workspace. Pulsar connects *to* Galaxy's RabbitMQ over AMQPS, so this workspace needs no open inbound port; Galaxy's workspace must accept this workspace on its AMQPS port. Files go directly between Pulsar and Galaxy's HTTPS URL (`/api/`).
+No broker runs on this workspace. Pulsar connects *to* Galaxy's RabbitMQ over AMQPS, so this workspace needs no open inbound port; the broker's workspace must accept this workspace on its AMQPS port. Files go directly between Pulsar and Galaxy's HTTPS URL (`/api/`).
 
 ```
-Pulsar (this workspace) ──AMQPS──▶ RabbitMQ on the Galaxy workspace (vhost /pulsar/<name>)
+Pulsar (this workspace) ──AMQPS──▶ RabbitMQ on the Galaxy workspace, or pulsar_amqp_host (vhost /pulsar/<name>)
 Pulsar ─────── HTTPS for input/output files ───────▶ https://<galaxy>/api/
 ```
 
@@ -24,7 +24,8 @@ For each entry `<name>` of `src_galaxy_pulsar_amqp_configs`, the Galaxy componen
 
    | Parameter | Default | Galaxy side |
    | --- | --- | --- |
-   | `pulsar_galaxy_fqdn` | required | Galaxy's `workspace_fqdn`, e.g. `galaxy.example.org` (no `https://`); must be the name in Galaxy's TLS certificate |
+   | `pulsar_galaxy_fqdn` | required | Galaxy's `workspace_fqdn`, e.g. `galaxy.example.org` (no `https://`): shown on the welcome page, and the broker (the name in its TLS certificate) unless `pulsar_amqp_host` is set |
+   | `pulsar_amqp_host` | empty | none: the RabbitMQ hostname when the broker is not the Galaxy workspace (the name in its TLS certificate), e.g. `mq.galaxyproject.eu` for [usegalaxy.eu](#usegalaxyeus-pulsar-network); empty means `pulsar_galaxy_fqdn` |
    | `pulsar_amqp_port` | `5671` | `src_galaxy_rabbitmq_port` (not 5672, 4369, 25672, 80, 443 or 8080, as on Galaxy) |
    | `pulsar_amqp_name` | required | the entry's `name` (`a-z 0-9 _ -`, at most 64, not `galaxy`, `guest`, `true`, `false`) |
    | `pulsar_amqp_password` | required, secret | the entry's `password` (at least 12 of `A-Z a-z 0-9 . _ ~ -`) |
@@ -34,15 +35,31 @@ For each entry `<name>` of `src_galaxy_pulsar_amqp_configs`, the Galaxy componen
    | `pulsar_docker` | `false` | the entry's `docker_enabled` (only without Apptainer) |
    | `pulsar_cvmfs` | `true` | mounts the Galaxy CVMFS repositories, as `src_galaxy_cvmfs` does on Galaxy |
    | `pulsar_job_runner` | `slurm` | none: `slurm` runs jobs through Slurm on this workspace (DRMAA), `local` in Pulsar itself |
+   | `pulsar_amqp_ack_republish_time` | `1200` | the runner's `amqp_ack_republish_time`: seconds before an unacknowledged message is sent again; `1200` for the Galaxy component's runner, `300` for usegalaxy.eu's |
 
    Empty values (how SRC passes an unset parameter) get these defaults, and an empty required parameter is an error; a misspelt `true`/`false` or runner is an error. The playbook validates the parameters first, with the rules of Galaxy's parser, and lists every problem without echoing the password.
 5. Create the workspace with the storage volume attached. Open `https://WORKSPACE_HOST/` (SRAM sign-in) for the Galaxy entry and status.
 
+### usegalaxy.eu's Pulsar Network
+
+[usegalaxy.eu's Pulsar Network](https://pulsar-network.readthedocs.io/en/latest/rabbitmq.html) uses the same user and vhost convention (`galaxy_<id>`, `/pulsar/galaxy_<id>`), but its RabbitMQ is a separate host, `mq.galaxyproject.eu`, not the Galaxy server: Galaxy's runner `pulsar_eu_<id>` connects with `pyamqp://galaxy_<id>:<password>@mq.galaxyproject.eu:5671//pulsar/galaxy_<id>?ssl=1` (usegalaxy-eu/infrastructure-playbook, `templates/galaxy/config/job_conf.yml`), `manager: production` and `amqp_ack_republish_time: 300`. After the usegalaxy.eu admins have created your user and vhost and given you the password, set:
+
+| Parameter | Value |
+| --- | --- |
+| `pulsar_galaxy_fqdn` | `usegalaxy.eu` (named on the welcome page only; Galaxy's runner tells Pulsar its URL) |
+| `pulsar_amqp_host` | `mq.galaxyproject.eu` (the broker; its certificate is verified for this name) |
+| `pulsar_amqp_name` | `galaxy_<id>` |
+| `pulsar_amqp_password` | the password you were given |
+| `pulsar_manager` | `production` |
+| `pulsar_amqp_ack_republish_time` | `300` |
+
+The welcome page's `src_galaxy_pulsar_amqp_configs` entry is then not needed (usegalaxy.eu configures its runner itself, including `galaxy_url`, where Pulsar fetches inputs and posts outputs); the AMQP URL in `app.yml` is usegalaxy.eu's without `?ssl=1`, which the `amqp_connect_ssl_*` settings replace (below). Do not paste that URL into `pulsar_amqp_host`: only the hostname goes there, and the validation never echoes a value with a login.
+
 ## What the playbook does
 
 * Installs `pulsar-app[amqp]` 0.15.15 (kombu, py-amqp) and `drmaa` in `/opt/pulsar/venv`, webless with `pulsar-main` in a `pulsar` systemd unit, as in usegalaxy.eu's [NEMO login-node role](https://github.com/usegalaxy-eu/pulsar-nemo-login-role). Jobs run on this workspace through Slurm (below), or with `pulsar_job_runner: local` in Pulsar itself (`queued_python`, vCPUs − 1 concurrent jobs).
-* Writes `/opt/pulsar/config/app.yml` (`root:pulsar 0640`, the only file with the password besides the welcome page): `message_queue_url: pyamqp://<name>:<password>@<galaxy fqdn>:<port>//pulsar/<name>`, the same manager, `staging_directory`, `amqp_acknowledge: true`, `amqp_ack_republish_time: 1200` and publish retries as Galaxy's template.
-* **Verifies Galaxy's TLS certificate and hostname**: `amqp_connect_ssl_cert_reqs: cert_required`, `amqp_connect_ssl_ca_certs: /etc/ssl/certs/ca-certificates.crt` (Ubuntu's CA bundle; SRC-Nginx certificates come from Let's Encrypt or ZeroSSL) and `amqp_connect_ssl_server_hostname: <galaxy fqdn>`.
+* Writes `/opt/pulsar/config/app.yml` (`root:pulsar 0640`, the only file with the password besides the welcome page): `message_queue_url: pyamqp://<name>:<password>@<broker host>:<port>//pulsar/<name>` (the broker host is `pulsar_amqp_host`, or `pulsar_galaxy_fqdn` when it is empty), the same manager, `staging_directory`, `amqp_acknowledge: true`, `amqp_ack_republish_time: <pulsar_amqp_ack_republish_time>` (`1200`, as Galaxy's template) and publish retries as Galaxy's template.
+* **Verifies the broker's TLS certificate and hostname**: `amqp_connect_ssl_cert_reqs: cert_required`, `amqp_connect_ssl_ca_certs: /etc/ssl/certs/ca-certificates.crt` (Ubuntu's CA bundle; SRC-Nginx certificates come from Let's Encrypt or ZeroSSL) and `amqp_connect_ssl_server_hostname: <broker host>`.
   * The URL has no `?ssl=1`, unlike the Galaxy README's example: kombu lets the URL's `ssl` replace the `ssl` options Pulsar builds from `amqp_connect_ssl_*`, so with `?ssl=1` nothing beyond the CA chain would be checked. The `amqp_connect_ssl_*` settings switch TLS on by themselves.
   * py-amqp checks the hostname only when `server_hostname` is set, hence the third setting. `cert_reqs` takes the name of the `ssl` constant (`cert_required`); `required` would fail in Pulsar.
   * `tests/test_check_amqp.py` performs real TLS handshakes through Pulsar's connection code: a certificate for another host and one from an unknown CA are both rejected.
@@ -124,7 +141,7 @@ To run it elsewhere, install `requirements-dev.txt`, `molecule/requirements.txt`
 What CI cannot cover: SRC's own volumes, hostnames and certificates, and a real Galaxy.
 
 1. Choose a name and a password (12 or more of `A-Z a-z 0-9 . _ ~ -`). Deploy a Galaxy workspace from [src-component-galaxy-amqp](https://github.com/mirelaminkova/src-component-galaxy-amqp) with `src_galaxy_rabbitmq: true` and `src_galaxy_pulsar_amqp_configs: [{name: <name>, password: <password>, jobs_directory: <pulsar_storage_path>/staging, singularity_enabled: true}]` (the entry this workspace's welcome page shows), and open `src_galaxy_rabbitmq_port` (5671) in its security group for the Pulsar workspace.
-2. Deploy this component on a workspace with an attached volume, with `pulsar_galaxy_fqdn` set to the Galaxy workspace's hostname, the same name and password, and `pulsar_storage_path: /data/<volume name>/pulsar`. The deployment succeeds only when Pulsar consumes its setup queue; compare the welcome page's entry with Galaxy's.
+2. Deploy this component on a workspace with an attached volume, with `pulsar_galaxy_fqdn` set to the Galaxy workspace's hostname (`pulsar_amqp_host` empty: the broker is that workspace), the same name and password, and `pulsar_storage_path: /data/<volume name>/pulsar`. The deployment succeeds only when Pulsar consumes its setup queue; compare the welcome page's entry with Galaxy's.
 3. On the Galaxy workspace: `sudo rabbitmqctl -n rabbit@localhost list_consumers -p /pulsar/<name>` lists `pulsar__setup`, and `sudo rabbitmqctl -n rabbit@localhost list_connections user vhost ssl` shows `<name>  /pulsar/<name>  true`.
 4. In Galaxy, choose this Pulsar under User → Preferences → Manage information → **Use distributed compute resources** (listed by the entry's `label`, which defaults to its `name`), upload a small text file and run a tool on it (Sort, say). On the Pulsar workspace, `squeue` shows the job while it runs, `journalctl -u pulsar` its staging, and its files appear under `<pulsar_storage_path>/staging/`. The job turns green in Galaxy and its output is correct.
 5. `sudo /opt/pulsar/venv/bin/python /opt/pulsar/check_amqp.py /opt/pulsar/config/app.yml` exits with 0 after a reboot of the Pulsar workspace, too.

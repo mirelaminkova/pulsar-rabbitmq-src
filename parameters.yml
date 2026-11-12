@@ -4,6 +4,9 @@
 # src_galaxy_pulsar_amqp_configs (mirelaminkova/src-component-galaxy-amqp).
 # Galaxy workspace hostname, e.g. galaxy.example.org (no https://). Required.
 pulsar_galaxy_fqdn: ""
+# RabbitMQ hostname when the broker is not the Galaxy workspace (usegalaxy.eu:
+# mq.galaxyproject.eu). Empty: pulsar_galaxy_fqdn.
+pulsar_amqp_host: ""
 # Galaxy's src_galaxy_rabbitmq_port.
 pulsar_amqp_port: "5671"
 # The entry's name. Required.
@@ -24,3 +27,6 @@ pulsar_apptainer: "true"
 pulsar_docker: "false"
 # "slurm" runs jobs through Slurm (DRMAA) on this workspace; "local" in Pulsar itself.
 pulsar_job_runner: slurm
+# Seconds before Pulsar republishes an unacknowledged message: 1200 for the Galaxy
+# component's runner, 300 for usegalaxy.eu's.
+pulsar_amqp_ack_republish_time: "1200"

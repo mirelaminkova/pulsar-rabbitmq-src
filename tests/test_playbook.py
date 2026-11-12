@@ -64,6 +64,7 @@ def test_component_parameters_map_onto_galaxy():
 
     for name in (
         "pulsar_galaxy_fqdn",
+        "pulsar_amqp_host",
         "pulsar_amqp_port",
         "pulsar_amqp_name",
         "pulsar_amqp_password",
@@ -72,6 +73,7 @@ def test_component_parameters_map_onto_galaxy():
         "pulsar_cvmfs",
         "pulsar_docker",
         "pulsar_apptainer",
+        "pulsar_amqp_ack_republish_time",
     ):
         assert name in parameters
     assert parameters["pulsar_amqp_password"] == ""
@@ -329,6 +331,25 @@ def test_welcome_page_keeps_the_notice_and_noindex():
     assert '<meta name="robots" content="noindex">' in page
     assert "RabbitMQ password" in page
     assert "members" in page
+
+
+def test_welcome_page_shows_the_galaxy_host_as_the_broker():
+    # pulsar_amqp_host unset (an empty string from SRC): the broker is the Galaxy host.
+    page = render("welcome.html.j2", pulsar_amqp_host="")
+
+    assert "<code>amqps://galaxy.example.org:5671</code>" in page
+    assert page == render("welcome.html.j2")
+
+
+def test_welcome_page_shows_a_separate_broker_host():
+    page = render(
+        "welcome.html.j2", pulsar_galaxy_fqdn="usegalaxy.eu", pulsar_amqp_host="mq.galaxyproject.eu"
+    )
+
+    assert "<code>amqps://mq.galaxyproject.eu:5671</code>" in page
+    assert "amqps://usegalaxy.eu" not in page
+    # Galaxy's own name still identifies the workspace the entry belongs to.
+    assert "the Galaxy workspace <code>usegalaxy.eu</code>" in page
 
 
 def test_welcome_page_does_not_claim_a_check_that_may_have_failed():

@@ -2,8 +2,12 @@
 # --- Component parameters: one-to-one with the Galaxy component's entry ---------
 # (mirelaminkova/src-component-galaxy-amqp, src_galaxy_pulsar_amqp_configs). SRC
 # passes unset parameters as empty strings; empty values get Galaxy's defaults.
-# Galaxy workspace hostname (Galaxy's workspace_fqdn), as in its TLS certificate.
+# Galaxy workspace hostname (Galaxy's workspace_fqdn): the broker unless pulsar_amqp_host
+# is set, and the Galaxy the welcome page names.
 pulsar_galaxy_fqdn: ""
+# The RabbitMQ host, as in its TLS certificate. Empty: the Galaxy host, where the Galaxy
+# component runs RabbitMQ. usegalaxy.eu's Pulsar Network has its own, mq.galaxyproject.eu.
+pulsar_amqp_host: ""
 # Galaxy's src_galaxy_rabbitmq_port (AMQPS).
 pulsar_amqp_port: 5671
 # This Pulsar's `name` in src_galaxy_pulsar_amqp_configs: RabbitMQ user <name>,
@@ -33,14 +37,19 @@ pulsar_docker: false
 # single-node Slurm on this workspace (Pulsar manager type queued_drmaa); "local"
 # runs them in Pulsar itself (queued_python). Galaxy sees no difference.
 pulsar_job_runner: slurm
+# Seconds after which Pulsar republishes a status update Galaxy has not acknowledged
+# (amqp_ack_republish_time): 1200 for the Galaxy component's runner, 300 for usegalaxy.eu's.
+pulsar_amqp_ack_republish_time: 1200
 
 # --- Derived settings; use these, never the parameters directly ---------------
 _pulsar_amqp: >-
-  {{ {'galaxy_fqdn': pulsar_galaxy_fqdn, 'port': pulsar_amqp_port,
-      'name': pulsar_amqp_name, 'password': pulsar_amqp_password,
-      'manager': pulsar_manager, 'storage_path': pulsar_storage_path,
-      'docker_enabled': pulsar_docker, 'singularity_enabled': pulsar_apptainer,
-      'cvmfs': pulsar_cvmfs, 'job_runner': pulsar_job_runner}
+  {{ {'galaxy_fqdn': pulsar_galaxy_fqdn, 'host': pulsar_amqp_host,
+      'port': pulsar_amqp_port, 'name': pulsar_amqp_name,
+      'password': pulsar_amqp_password, 'manager': pulsar_manager,
+      'storage_path': pulsar_storage_path, 'docker_enabled': pulsar_docker,
+      'singularity_enabled': pulsar_apptainer, 'cvmfs': pulsar_cvmfs,
+      'job_runner': pulsar_job_runner,
+      'ack_republish_time': pulsar_amqp_ack_republish_time}
      | pulsar_amqp_settings }}
 _pulsar_amqp_errors: "{{ _pulsar_amqp | pulsar_amqp_errors }}"
 _pulsar_cvmfs: "{{ _pulsar_amqp.cvmfs }}"
@@ -106,8 +115,8 @@ pulsar_check_script: /opt/pulsar/check_amqp.py
 # root-only directory, as Python 3.10's -I still puts the script's directory on sys.path.
 pulsar_storage_check_script: /usr/local/libexec/pulsar-src/check_storage.py
 pulsar_version: "0.15.15"
-# Ubuntu's CA bundle: Galaxy's certificate (SRC-Nginx, Let's Encrypt or ZeroSSL)
-# is verified against it, together with the hostname pulsar_galaxy_fqdn.
+# Ubuntu's CA bundle: the broker's certificate (SRC-Nginx, Let's Encrypt or ZeroSSL on
+# a Galaxy workspace) is verified against it, together with its hostname _pulsar_amqp.host.
 pulsar_amqp_ca_certs: /etc/ssl/certs/ca-certificates.crt
 # With pulsar_job_runner local: Pulsar runs this many jobs at once itself.
 pulsar_num_concurrent_jobs: "{{ [ansible_facts['processor_vcpus'] | default(1) | int - 1, 1] | max }}"

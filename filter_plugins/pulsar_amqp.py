@@ -16,6 +16,9 @@ import re
 
 DEFAULTS = {
     "port": 5671,  # src_galaxy_rabbitmq_port
+    # Galaxy's runner (job_conf.yml.j2) and Pulsar republish an unacknowledged message
+    # after this many seconds; usegalaxy.eu's runners use 300.
+    "ack_republish_time": 1200,
     "manager": "_default_",
     "docker_enabled": False,
     "singularity_enabled": True,
@@ -44,10 +47,26 @@ _FQDN = re.compile(rf"(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+")
 # Galaxy's _galaxy_rabbitmq_reserved_ports: RabbitMQ's own, Nginx's and Galaxy's ports.
 _RESERVED_PORTS = (5672, 4369, 25672, 80, 443, 8080)
 _BOOLEANS = {True: True, False: False, "true": True, "false": False}
+# ASCII digits only: str.isdigit() also accepts superscripts, which int() refuses. Ten
+# digits at most: int() refuses thousands, and nothing longer is a port or a time.
+_INTEGER = re.compile(r"[0-9]{1,10}")
 
 
 def _text(value):
     return "" if value is None else str(value).strip()
+
+
+def _integer(value, default):
+    text = _text(value) or str(default)
+    return int(text) if _INTEGER.fullmatch(text) else text
+
+
+def _shown(value, password):
+    """``value`` for an error message, unless it holds the password: a pasted runner URL,
+    or the password in the wrong field. Hostnames are lowercased, hence the fold."""
+    if "@" in value or (password and password.lower() in value.lower()):
+        return "a value with a login or the password"
+    return value
 
 
 def _boolean(value, default):
@@ -70,16 +89,23 @@ def _storage_directory(value):
 def pulsar_amqp_settings(params):
     """Normalise the component parameters and derive the names Galaxy and Pulsar use.
 
-    ``params`` has the keys galaxy_fqdn, port, name, password, manager, storage_path,
-    docker_enabled, singularity_enabled, cvmfs and job_runner. Empty values (how SRC passes an
-    unset parameter) get Galaxy's defaults, or this component's for cvmfs and job_runner. A
-    volume's mount point as storage_path stands for its ``pulsar`` directory. The result is
-    meaningful only without :func:`pulsar_amqp_errors`.
+    ``params`` has the keys galaxy_fqdn, host, port, name, password, manager, storage_path,
+    docker_enabled, singularity_enabled, cvmfs, job_runner and ack_republish_time. Empty
+    values (how SRC passes an unset parameter) get Galaxy's defaults, or this component's
+    for cvmfs and job_runner. The broker ``host`` is the Galaxy host unless set: the Galaxy
+    component runs RabbitMQ on the Galaxy workspace, usegalaxy.eu's Pulsar Network on a host
+    of its own (mq.galaxyproject.eu). A volume's mount point as storage_path stands for its
+    ``pulsar`` directory. The result is meaningful only without :func:`pulsar_amqp_errors`.
     """
-    port = _text(params.get("port")) or str(DEFAULTS["port"])
+    galaxy_fqdn = _text(params.get("galaxy_fqdn")).lower()
     settings = {
-        "galaxy_fqdn": _text(params.get("galaxy_fqdn")).lower(),
-        "port": int(port) if port.isdigit() else port,
+        "galaxy_fqdn": galaxy_fqdn,
+        # The RabbitMQ host: the URL's host and the name its certificate is checked for.
+        "host": _text(params.get("host")).lower() or galaxy_fqdn,
+        "port": _integer(params.get("port"), DEFAULTS["port"]),
+        "ack_republish_time": _integer(
+            params.get("ack_republish_time"), DEFAULTS["ack_republish_time"]
+        ),
         "name": _text(params.get("name")),
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
@@ -101,7 +127,7 @@ def pulsar_amqp_settings(params):
         # No `?ssl=1`: kombu would let it replace the amqp_connect_ssl_* settings that
         # verify the certificate and hostname; those settings switch TLS on by themselves.
         url=(
-            f"pyamqp://{name}:{settings['password']}@{settings['galaxy_fqdn']}:{settings['port']}"
+            f"pyamqp://{name}:{settings['password']}@{settings['host']}:{settings['port']}"
             f"//pulsar/{name}"
         ),
     )
@@ -124,13 +150,26 @@ def _galaxy_entry(settings):
 def pulsar_amqp_errors(settings):
     """Return one message per invalid parameter; values of secrets are never included."""
     errors = []
+
+    def shown(value):
+        return _shown(str(value), settings["password"])
+
     fqdn = settings["galaxy_fqdn"]
     if not fqdn:
         errors.append("pulsar_galaxy_fqdn is required: the Galaxy workspace's hostname")
     elif not _FQDN.fullmatch(fqdn):
         errors.append(
             f"pulsar_galaxy_fqdn must be a hostname such as galaxy.example.org "
-            f"(no https:// or port), got '{fqdn}'"
+            f"(no https:// or port), got '{shown(fqdn)}'"
+        )
+
+    # A host equal to the Galaxy host (empty pulsar_amqp_host) is validated above as
+    # pulsar_galaxy_fqdn.
+    host = settings["host"]
+    if host != fqdn and not _FQDN.fullmatch(host):
+        errors.append(
+            f"pulsar_amqp_host must be the RabbitMQ hostname such as mq.galaxyproject.eu "
+            f"(no https:// or port), or empty for the Galaxy host, got '{shown(host)}'"
         )
 
     port = settings["port"]
@@ -138,7 +177,7 @@ def pulsar_amqp_errors(settings):
         errors.append(
             "pulsar_amqp_port must be src_galaxy_rabbitmq_port: an integer from 1 to 65535, "
             f"not {', '.join(map(str, _RESERVED_PORTS))}, "
-            f"got '{port}'"
+            f"got '{shown(port)}'"
         )
 
     name = settings["name"]
@@ -151,7 +190,7 @@ def pulsar_amqp_errors(settings):
         errors.append(
             "pulsar_amqp_name must be at most 64 of a-z 0-9 _ - "
             "and not galaxy, guest, true or false, "
-            f"got '{name}'"
+            f"got '{shown(name)}'"
         )
 
     if not settings["password"]:
@@ -164,10 +203,19 @@ def pulsar_amqp_errors(settings):
             "pulsar_amqp_password must be at least 12 characters from A-Z a-z 0-9 . _ ~ -"
         )
 
+    republish = settings["ack_republish_time"]
+    if not (isinstance(republish, int) and republish >= 1):
+        errors.append(
+            "pulsar_amqp_ack_republish_time must be a whole number of seconds, at least 1 "
+            "(1200 for the Galaxy component's runner, 300 for usegalaxy.eu's), "
+            f"got '{shown(republish)}'"
+        )
+
     manager = settings["manager"]
     if not _MANAGER.fullmatch(manager) or manager in _BOOLEAN_WORDS:
         errors.append(
-            f"pulsar_manager must match [A-Za-z0-9_-]+ and not be true or false, got '{manager}'"
+            "pulsar_manager must match [A-Za-z0-9_-]+ and not be true or false, "
+            f"got '{shown(manager)}'"
         )
 
     storage_path = settings["storage_path"]
@@ -184,7 +232,7 @@ def pulsar_amqp_errors(settings):
             "pulsar_storage_path must be an attached storage volume's mount point, "
             "/data/<volume name>, or a directory on it, /data/<volume name>/<directory>, "
             "of A-Z a-z 0-9 _ . - without . or .., "
-            f"got '{storage_path}'"
+            f"got '{shown(storage_path)}'"
         )
 
     for key, parameter in (
@@ -193,10 +241,12 @@ def pulsar_amqp_errors(settings):
         ("cvmfs", "pulsar_cvmfs"),
     ):
         if not isinstance(settings[key], bool):
-            errors.append(f"{parameter} must be true or false, got '{settings[key]}'")
+            errors.append(f"{parameter} must be true or false, got '{shown(settings[key])}'")
 
     if settings["job_runner"] not in _JOB_RUNNERS:
-        errors.append(f"pulsar_job_runner must be slurm or local, got '{settings['job_runner']}'")
+        errors.append(
+            f"pulsar_job_runner must be slurm or local, got '{shown(settings['job_runner'])}'"
+        )
     return errors
 
 

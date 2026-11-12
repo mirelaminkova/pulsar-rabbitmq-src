@@ -7,10 +7,10 @@ message_queue_url: {{ _pulsar_amqp.url | to_json }}
 amqp_connect_ssl_cert_reqs: cert_required
 amqp_connect_ssl_ca_certs: {{ pulsar_amqp_ca_certs | to_json }}
 # py-amqp checks the certificate's hostname only when this is set.
-amqp_connect_ssl_server_hostname: {{ _pulsar_amqp.galaxy_fqdn | to_json }}
+amqp_connect_ssl_server_hostname: {{ _pulsar_amqp.host | to_json }}
 # Must match Galaxy's runner pulsar_mq_{{ _pulsar_amqp.name }}.
 amqp_acknowledge: true
-amqp_ack_republish_time: 1200
+amqp_ack_republish_time: {{ _pulsar_amqp.ack_republish_time }}
 amqp_publish_retry: true
 amqp_publish_retry_max_retries: 60
 amqp_publish_retry_interval_start: 10

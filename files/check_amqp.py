@@ -1,4 +1,6 @@
-"""Check that Pulsar logged in to Galaxy's RabbitMQ and consumes its setup queue.
+"""Check that Pulsar logged in to the RabbitMQ broker and consumes its setup queue.
+
+The broker is the Galaxy workspace, or pulsar_amqp_host (usegalaxy.eu's mq.galaxyproject.eu).
 
 Usage (with Pulsar's venv Python): check_amqp.py APP_YML
 
@@ -53,6 +55,8 @@ def check(conf):
     where = {
         "address": f"{url.hostname}:{url.port}",
         "host": url.hostname,
+        # The name the certificate is checked for: pulsar_amqp_host, or the Galaxy host.
+        "server_hostname": conf.get("amqp_connect_ssl_server_hostname") or url.hostname,
         "user": url.username,
         "vhost": url.path[1:],
         "queue": queue,
@@ -76,8 +80,9 @@ def explain(error, where):
     # Most specific first: certificate errors are SSLErrors, which are OSErrors.
     if isinstance(error, ssl.SSLCertVerificationError):
         return FAILED, (
-            "The TLS certificate of {address} was rejected ({reason}). pulsar_galaxy_fqdn must be "
-            "the Galaxy workspace's hostname ({host}) and its certificate valid for it."
+            "The TLS certificate of {address} was rejected ({reason}). The certificate must be "
+            "for the broker's hostname {server_hostname} (pulsar_amqp_host, or "
+            "pulsar_galaxy_fqdn when it is empty)."
         ).format(reason=error.verify_message or error.reason, **where)
     if isinstance(error, ssl.SSLError):
         return (
@@ -88,7 +93,10 @@ def explain(error, where):
     if isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN:
         return RETRY, f"Resolving {where['host']} failed temporarily ({error.strerror})."
     if isinstance(error, socket.gaierror):
-        return FAILED, f"Cannot resolve {where['host']}: check pulsar_galaxy_fqdn."
+        return FAILED, (
+            f"Cannot resolve {where['host']}: check pulsar_amqp_host, or pulsar_galaxy_fqdn "
+            "when it is empty."
+        )
     if isinstance(error, amqp_exceptions.AccessRefused):
         return FAILED, (
             "RabbitMQ on {address} refused the login of user {user}: pulsar_amqp_name and "
@@ -107,9 +115,9 @@ def explain(error, where):
         ).format(**where)
     if isinstance(error, (OSError, amqp_exceptions.ConnectionError)):
         return RETRY, (
-            "Cannot reach RabbitMQ on {address} ({kind}): Galaxy needs src_galaxy_rabbitmq: true, "
-            "and "
-            "its security group must allow this workspace on that port."
+            "Cannot reach RabbitMQ on {address} ({kind}): the broker's security group must "
+            "allow this workspace on that port (a Galaxy workspace also needs "
+            "src_galaxy_rabbitmq: true)."
         ).format(kind=type(error).__name__, **where)
     return (
         FAILED,

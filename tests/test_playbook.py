@@ -4,6 +4,7 @@ import re
 
 import pytest
 
+from tests.byoc_contract.validate import FIELDS
 from tests.helpers import (
     FACTS,
     PASSWORD,
@@ -241,21 +242,15 @@ def test_unit_is_installed_before_tasks_that_can_fail():
 
 # Templates: the welcome page (templates/welcome.html.j2)
 
-# byoc-sync's byoc_pulsar form (testenv/user_preferences_extra_conf.yml), in its order.
-FORM_FIELDS = (
-    "username",
-    "password",
-    "max_accepted_cores",
-    "max_accepted_mem",
-    "min_accepted_gpus",
-    "max_accepted_gpus",
-    "nfs_path",
-)
+# byoc-sync's byoc_pulsar form, in its order (vendored, checked against byoc-sync's main).
+FORM_FIELDS = FIELDS
 FORM_UNITS = {"max_accepted_mem": "GB"}
+# The state's tag and the text next to it; for error, the check's message (MESSAGE).
+MESSAGE = "the broker refused the connection"
 STATE_TAGS = {
     "connected": ("Connected", "Galaxy's broker accepts this Pulsar"),
     "waiting": ("Waiting", "waiting for the Galaxy admins to create your account"),
-    "error": ("Error", "the broker refused the connection"),
+    "error": ("Error", MESSAGE),
     "unknown": ("Not checked yet", "the connection check has not run yet"),
 }
 
@@ -278,15 +273,10 @@ def test_welcome_page_shows_the_byoc_form_in_the_forms_order():
         assert row in page, field
         positions.append(page.index(row))
     assert positions == sorted(positions)
+    assert form_row("max_accepted_mem", values["max_accepted_mem"]) not in page  # the unit
     assert page.count(PASSWORD) == 1
     assert "User &rsaquo; Preferences &rsaquo; Manage information" in page
     assert "reload this page" in page
-
-
-def test_welcome_page_shows_the_memory_unit_outside_the_copied_value():
-    page = render("welcome.html.j2")
-    assert form_row("max_accepted_mem", 14, "GB") in page
-    assert form_row("max_accepted_mem", 14) not in page
 
 
 def test_welcome_page_shows_the_broker_version_and_storage():
@@ -307,9 +297,8 @@ def test_welcome_page_follows_the_resolved_credentials():
     # tasks/credentials.yml replaces _pulsar_amqp (set_fact) with the generated credentials.
     params = resolve("_pulsar_amqp_params")
     amqp = resolve("_pulsar_amqp", _pulsar_amqp_params={**params, "name": "srcdeadbeef"})
-    form = resolve("_pulsar_byoc_form", _pulsar_amqp=amqp)
 
-    page = render("welcome.html.j2", _pulsar_amqp=amqp, _pulsar_byoc_form=form)
+    page = render("welcome.html.j2", _pulsar_amqp=amqp)
 
     assert "<code>galaxy_srcdeadbeef_byoc</code>" in page
     assert form_row("username", "srcdeadbeef") in page
@@ -327,13 +316,12 @@ def test_welcome_page_shows_the_default_broker():
 
 @pytest.mark.parametrize(("state", "expected"), STATE_TAGS.items())
 def test_welcome_page_shows_the_connection_state(state, expected):
-    page = render(
-        "welcome.html.j2", **byoc_state(state, message="the broker refused the connection")
-    )
+    page = render("welcome.html.j2", **byoc_state(state, message=MESSAGE))
     tag, text = expected
 
     assert f'<span class="state state-{state}">{tag}</span>' in page
     assert text in page
+    assert (MESSAGE in page) == (state == "error")
     for other in set(STATE_TAGS) - {state}:
         assert f'class="state state-{other}"' not in page
 
@@ -344,9 +332,17 @@ def test_welcome_page_shows_an_error_without_a_message():
     assert "the connection check failed" in page
 
 
-def test_welcome_page_treats_an_unexpected_state_as_unknown():
-    page = render("welcome.html.j2", **byoc_state("mystery"))
+@pytest.mark.parametrize(
+    "state",
+    [byoc_state("mystery"), byoc_state("Connected"), {"_pulsar_byoc_state": {}}]
+    + [{"_pulsar_byoc_state": value} for value in (None, "", '{"state": "connected"}', [])],
+    ids=repr,
+)
+def test_welcome_page_treats_an_unexpected_or_malformed_state_as_unknown(state):
+    # A state file from an earlier version must never break the deployment.
+    page = render("welcome.html.j2", **state)
     assert '<span class="state state-unknown">Not checked yet</span>' in page
+    assert "state-connected" not in page[page.index("<body>") :]
 
 
 @pytest.mark.parametrize(
@@ -359,7 +355,7 @@ def test_welcome_page_shows_when_the_state_was_checked(state, checked_at):
         assert f"checked at <code>{checked_at}</code>" in page
 
 
-def test_welcome_page_renders_without_the_state_variable():
+def test_welcome_page_shows_not_checked_yet_by_default():
     # group_vars' default: the tolerant check (issue #22) overrides it when it has run.
     assert resolve("_pulsar_byoc_state") == {"state": "unknown", "message": "", "checked_at": ""}
     assert '<span class="state state-unknown">Not checked yet</span>' in render("welcome.html.j2")
@@ -393,7 +389,7 @@ def test_welcome_page_shows_the_troubleshooting_commands():
         "checked that",
     ],
 )
-def test_welcome_page_has_no_entry_mode_text(text):
+def test_welcome_page_has_no_text_of_earlier_pages(text):
     assert text not in render("welcome.html.j2")
 
 
@@ -425,7 +421,7 @@ def test_welcome_page_renders_for_every_combination(runner, docker, apptainer, c
     assert page.count(PASSWORD) == 1
 
 
-def test_welcome_page_keeps_the_notice_and_noindex():
+def test_welcome_page_keeps_the_layout_notice_and_noindex():
     page = render("welcome.html.j2")
     assert '<meta name="robots" content="noindex">' in page
     assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in page
@@ -447,6 +443,7 @@ ESCAPED_XSS = "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
     [
         {"workspace_fqdn": XSS},
         {"pulsar_manager": XSS},
+        {"pulsar_manager": XSS, "pulsar_job_runner": "local"},
         {"pulsar_amqp_name": XSS},
         {"pulsar_amqp_password": XSS},
         {"pulsar_amqp_host": XSS},

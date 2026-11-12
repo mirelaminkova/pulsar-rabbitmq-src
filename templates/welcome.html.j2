@@ -1,8 +1,9 @@
 {% set a = _pulsar_amqp %}
 {% set form = _pulsar_byoc_form %}
-{% set s = _pulsar_byoc_state %}
-{% set state = s.state if s.state in ('connected', 'waiting', 'error') else 'unknown' %}
-{# byoc-sync's byoc_pulsar form (testenv/user_preferences_extra_conf.yml), in its order. #}
+{# The broker check's state (issue #22); anything malformed renders as "not checked yet". #}
+{% set s = _pulsar_byoc_state if _pulsar_byoc_state is mapping else {} %}
+{% set state = s.state | default('') if s.state | default('') in ('connected', 'waiting', 'error') else 'unknown' %}
+{# byoc-sync's byoc_pulsar form, in its order (tests/byoc_contract/validate.py, FIELDS). #}
 {% set rows = [
      ('username', form.username, ''),
      ('password', a.password, ''),
@@ -109,7 +110,7 @@
       <h2>Enter this in Galaxy</h2>
       <dl>
 {% for field, value, unit in rows %}
-        <dt>{{ field }}</dt>
+        <dt>{{ field | e }}</dt>
         <dd><code id="byoc-{{ field }}">{{ value | e }}</code> <button class="copy-btn" type="button" onclick="copyValue('byoc-{{ field }}', this)">Copy</button>{{ (' ' ~ unit) if unit else '' }}</dd>
 {% endfor %}
       </dl>

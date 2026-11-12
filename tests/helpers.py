@@ -5,13 +5,13 @@ The playbook's filter plugins (``filter_plugins/``) are registered like
 templates are tested together.
 """
 
-import html
 from pathlib import Path
 
 import yaml
 from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.loader import add_all_plugin_dirs
 from ansible.template import Templar
+from markupsafe import escape
 
 from filter_plugins.pulsar_amqp import pulsar_amqp_settings
 
@@ -88,21 +88,21 @@ def render(template, **params):
     return env.do_template(text, preserve_trailing_newlines=True, escape_backslashes=False)
 
 
+def render_yaml(template, **params):
+    return yaml.safe_load(render(template, **params))
+
+
 def form_row(field, value, unit=""):
     """The welcome page's row for a ``byoc_pulsar`` form field: the value in a <code> the
-    Copy button copies, the unit (if any) outside it. ``value`` is escaped as the template
-    escapes it."""
-    escaped = html.escape(str(value), quote=False)
+    Copy button copies, the unit (if any) outside it. ``value`` is escaped as the template's
+    ``| e`` escapes it."""
+    escaped = str(escape(str(value)))
     return (
         f"<dt>{field}</dt>\n"
         f'        <dd><code id="byoc-{field}">{escaped}</code>'
         f' <button class="copy-btn" type="button" onclick="copyValue(\'byoc-{field}\', this)">'
         f"Copy</button>{' ' + unit if unit else ''}</dd>"
     )
-
-
-def render_yaml(template, **params):
-    return yaml.safe_load(render(template, **params))
 
 
 def load_yaml(path):

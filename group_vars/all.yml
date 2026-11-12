@@ -1,59 +1,71 @@
 ---
-# --- Component parameters: one-to-one with the Galaxy component's entry ---------
-# (mirelaminkova/src-component-galaxy-amqp, src_galaxy_pulsar_amqp_configs). SRC
-# passes unset parameters as empty strings; empty values get Galaxy's defaults.
-# Galaxy workspace hostname (Galaxy's workspace_fqdn): the broker unless pulsar_amqp_host
-# is set, and the Galaxy the welcome page names.
-pulsar_galaxy_fqdn: ""
-# The RabbitMQ host, as in its TLS certificate. Empty: the Galaxy host, where the Galaxy
-# component runs RabbitMQ. usegalaxy.eu's Pulsar Network has its own, mq.galaxyproject.eu.
-pulsar_amqp_host: ""
-# Galaxy's src_galaxy_rabbitmq_port (AMQPS).
+# --- Component parameters: a BYOC Pulsar for the byoc-sync pipeline --------------
+# (sanjaysrikakulam/elixir_biohackathon_2026_project1, byoc-sync/, modelled on usegalaxy.eu).
+# SRC passes unset parameters as empty strings; empty values get usegalaxy.eu's defaults.
+# The Galaxy's RabbitMQ host, as in its TLS certificate (byoc-sync's site mq_host).
+pulsar_amqp_host: mq.galaxyproject.eu
+# Its AMQPS port (byoc-sync's site mq_port).
 pulsar_amqp_port: 5671
-# This Pulsar's `name` in src_galaxy_pulsar_amqp_configs: RabbitMQ user <name>,
-# vhost /pulsar/<name>, Galaxy environment amqp_<name>.
+# The BYOC name, which the user enters as the form's `username`: byoc-sync creates RabbitMQ
+# user galaxy_<name>_byoc and vhost /pulsar/galaxy_<name>_byoc for it. Empty: generated
+# ("src" and 8 hex digits) by tasks/credentials.yml and kept in <storage directory>/byoc.json.
 pulsar_amqp_name: ""
-# The entry's `password` (or the one Galaxy generated, in
-# /etc/galaxy-rabbitmq/pulsar_<name>.txt on the Galaxy workspace). Secret.
+# The form's `password`: 10 to 128 letters and digits. Empty: generated (24 characters) and
+# kept with the name. Shown on the welcome page for the form; not an SRC secret.
 pulsar_amqp_password: ""
-# The entry's `manager`.
-pulsar_manager: _default_
+# The manager byoc-sync's runner uses (fixed in its runner template): change it only for a
+# Galaxy whose runner uses another name, or Galaxy's jobs stay in a queue Pulsar never reads.
+pulsar_manager: production
 # The workspace's attached storage volume, which SRC mounts at /data/<volume name>: that
 # mount point (Pulsar then uses /data/<volume name>/pulsar) or a directory on it. Required.
-# All of Pulsar's data lives in that storage directory, including staging, the entry's
-# `jobs_directory` (<storage directory>/staging).
+# All of Pulsar's data lives in that storage directory; it is the form's `nfs_path`, from
+# which byoc-sync derives Galaxy's jobs_directory (<storage directory>/staging).
 pulsar_storage_path: ""
 # Mount the Galaxy project's CVMFS repositories under /cvmfs (reference data for
-# Galaxy's tool data tables), as the Galaxy component does with src_galaxy_cvmfs.
+# Galaxy's tool data tables), as usegalaxy.eu's Pulsar endpoints do.
 pulsar_cvmfs: true
-# Install Apptainer (with its `singularity` command), unprivileged (no setuid
-# starter); the welcome page's Galaxy entry then sets singularity_enabled.
+# Install Apptainer (with its `singularity` command), unprivileged (no setuid starter),
+# for the containers usegalaxy.eu's tools run in.
 pulsar_apptainer: true
-# Install Docker for docker_enabled Galaxy environments (the entry sets it only
-# without Apptainer). Off by default: the pulsar user joins the docker group,
-# which is equivalent to root on this workspace.
+# Install Docker for docker_enabled Galaxy destinations. Off by default: the pulsar user
+# joins the docker group, which is equivalent to root on this workspace.
 pulsar_docker: false
 # Where Pulsar runs Galaxy's jobs: "slurm" submits them through DRMAA to a
 # single-node Slurm on this workspace (Pulsar manager type queued_drmaa); "local"
 # runs them in Pulsar itself (queued_python). Galaxy sees no difference.
 pulsar_job_runner: slurm
 # Seconds after which Pulsar republishes a status update Galaxy has not acknowledged
-# (amqp_ack_republish_time): 1200 for the Galaxy component's runner, 300 for usegalaxy.eu's.
-pulsar_amqp_ack_republish_time: 1200
+# (amqp_ack_republish_time): 300, as byoc-sync's runner.
+pulsar_amqp_ack_republish_time: 300
 
 # --- Derived settings; use these, never the parameters directly ---------------
-_pulsar_amqp: >-
-  {{ {'galaxy_fqdn': pulsar_galaxy_fqdn, 'host': pulsar_amqp_host,
-      'port': pulsar_amqp_port, 'name': pulsar_amqp_name,
-      'password': pulsar_amqp_password, 'manager': pulsar_manager,
-      'storage_path': pulsar_storage_path, 'docker_enabled': pulsar_docker,
-      'singularity_enabled': pulsar_apptainer, 'cvmfs': pulsar_cvmfs,
-      'job_runner': pulsar_job_runner,
-      'ack_republish_time': pulsar_amqp_ack_republish_time}
-     | pulsar_amqp_settings }}
+# The parameters as the filter takes them; tasks/credentials.yml rebuilds _pulsar_amqp from
+# them with the resolved name and password (set_fact), so until then name and password may
+# be empty, and everything derived from _pulsar_amqp follows the fact afterwards.
+_pulsar_amqp_params:
+  host: "{{ pulsar_amqp_host }}"
+  port: "{{ pulsar_amqp_port }}"
+  name: "{{ pulsar_amqp_name }}"
+  password: "{{ pulsar_amqp_password }}"
+  manager: "{{ pulsar_manager }}"
+  storage_path: "{{ pulsar_storage_path }}"
+  docker_enabled: "{{ pulsar_docker }}"
+  singularity_enabled: "{{ pulsar_apptainer }}"
+  cvmfs: "{{ pulsar_cvmfs }}"
+  job_runner: "{{ pulsar_job_runner }}"
+  ack_republish_time: "{{ pulsar_amqp_ack_republish_time }}"
+_pulsar_amqp: "{{ _pulsar_amqp_params | pulsar_amqp_settings }}"
 _pulsar_amqp_errors: "{{ _pulsar_amqp | pulsar_amqp_errors }}"
 _pulsar_cvmfs: "{{ _pulsar_amqp.cvmfs }}"
 _pulsar_slurm: "{{ _pulsar_amqp.job_runner == 'slurm' }}"
+# The byoc_pulsar form of Galaxy's preferences for this Pulsar (the welcome page shows it).
+_pulsar_byoc_form: >-
+  {{ _pulsar_amqp | pulsar_byoc_form(ansible_facts['processor_vcpus'] | default(1),
+                                     ansible_facts['memtotal_mb']) }}
+# The credentials, root-only on the storage, and the helper that loads or creates them
+# (tasks/credentials.yml), next to the storage check.
+pulsar_byoc_store: "{{ _pulsar_amqp.storage_path }}/byoc.json"
+pulsar_byoc_script: /usr/local/libexec/pulsar-src/byoc_credentials.py
 
 # --- Pulsar ------------------------------------------------------------------
 pulsar_user: pulsar
@@ -72,9 +84,13 @@ pulsar_apptainer_cache_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_cache"
 pulsar_apptainer_tmp_dir: "{{ _pulsar_amqp.storage_path }}/apptainer_tmp"
 # Jobs' temporary files (TMPDIR); a directory per job under Slurm (task prolog).
 pulsar_job_tmp_dir: "{{ _pulsar_amqp.storage_path }}/job_tmp"
+# Galaxy's SINGULARITY_CACHEDIR for this Pulsar's jobs: byoc-sync's destination sets it to
+# <nfs_path>/var/database/container_cache (its destination.yml.j2).
+pulsar_container_cache_dir: "{{ _pulsar_amqp.storage_path }}/var/database/container_cache"
 # The directories the pulsar user owns, each in a root-owned one.
 _pulsar_owned_dirs: >-
-  {{ [pulsar_home, pulsar_persistence_dir, _pulsar_amqp.jobs_directory, pulsar_job_tmp_dir]
+  {{ [pulsar_home, pulsar_persistence_dir, _pulsar_amqp.jobs_directory, pulsar_job_tmp_dir,
+      pulsar_container_cache_dir]
      + ([pulsar_apptainer_cache_dir, pulsar_apptainer_tmp_dir]
         if _pulsar_amqp.singularity_enabled else []) }}
 # Units that write to the storage and so start only with it (tasks/storage.yml).
@@ -111,12 +127,13 @@ pulsar_docker_data_root: "{{ _pulsar_amqp.storage_path }}/docker"
 pulsar_venv: /opt/pulsar/venv
 pulsar_config_dir: /opt/pulsar/config
 pulsar_check_script: /opt/pulsar/check_amqp.py
-# files/check_storage.py, run as root before Pulsar, Docker and slurmd start; alone in its
-# root-only directory, as Python 3.10's -I still puts the script's directory on sys.path.
+# files/check_storage.py, run as root before Pulsar, Docker and slurmd start, in a directory
+# only root can write to and that holds only this component's root-owned scripts, as Python
+# 3.10's -I still puts the script's directory on sys.path.
 pulsar_storage_check_script: /usr/local/libexec/pulsar-src/check_storage.py
 pulsar_version: "0.15.15"
-# Ubuntu's CA bundle: the broker's certificate (SRC-Nginx, Let's Encrypt or ZeroSSL on
-# a Galaxy workspace) is verified against it, together with its hostname _pulsar_amqp.host.
+# Ubuntu's CA bundle: the broker's certificate is verified against it, together with its
+# hostname _pulsar_amqp.host.
 pulsar_amqp_ca_certs: /etc/ssl/certs/ca-certificates.crt
 # With pulsar_job_runner local: Pulsar runs this many jobs at once itself.
 pulsar_num_concurrent_jobs: "{{ [ansible_facts['processor_vcpus'] | default(1) | int - 1, 1] | max }}"
@@ -217,7 +234,7 @@ docker_daemon_options:
 pulsar_configure_src_proxy: true
 pulsar_welcome_dir: /srv/static
 nginx_reverse_proxy_locations:
-  # Only the exact root; the page contains the RabbitMQ password.
+  # Only the exact root; the page contains the BYOC password.
   - name: pulsar-welcome
     location: '= /'
     auth: sram

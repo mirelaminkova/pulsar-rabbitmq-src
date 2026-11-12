@@ -59,11 +59,11 @@ def test_no_broker_on_this_workspace(path):
 # Parameters
 
 
-def test_component_parameters_map_onto_galaxy():
+def test_component_parameters():
     parameters = load_yaml("parameters.yml")
 
+    assert "pulsar_galaxy_fqdn" not in parameters
     for name in (
-        "pulsar_galaxy_fqdn",
         "pulsar_amqp_host",
         "pulsar_amqp_port",
         "pulsar_amqp_name",
@@ -77,6 +77,9 @@ def test_component_parameters_map_onto_galaxy():
     ):
         assert name in parameters
     assert parameters["pulsar_amqp_password"] == ""
+    assert parameters["pulsar_amqp_host"] == "mq.galaxyproject.eu"
+    assert parameters["pulsar_manager"] == "production"
+    assert parameters["pulsar_amqp_ack_republish_time"] == "300"
 
 
 def test_parameters_have_group_vars_defaults():
@@ -91,13 +94,7 @@ def test_parameter_defaults_agree_with_group_vars(name):
     parameters = {
         key: value
         for key, value in load_yaml("parameters.yml").items()
-        if key
-        not in (
-            "pulsar_galaxy_fqdn",
-            "pulsar_amqp_name",
-            "pulsar_amqp_password",
-            "pulsar_storage_path",
-        )
+        if key not in ("pulsar_amqp_name", "pulsar_amqp_password", "pulsar_storage_path")
     }
     defaults = {key: group_vars[key] for key in parameters}
     assert resolve(name, **parameters) == resolve(name, **defaults)
@@ -245,36 +242,49 @@ def test_unit_is_installed_before_tasks_that_can_fail():
 # Templates
 
 
-def test_welcome_page_shows_the_galaxy_entry():
+def test_welcome_page_shows_the_byoc_form():
+    # What the user enters in Galaxy's preferences (byoc_pulsar): the form byoc-sync reads.
     page = render("welcome.html.j2")
-    entry = resolve("_pulsar_amqp")["galaxy_entry"]
+    form = resolve("_pulsar_byoc_form")
 
-    assert f'<pre id="galaxy-amqp-param">{html.escape(entry)}</pre>' in page
-    assert "src_galaxy_pulsar_amqp_configs" in page
-    # The one thing the Galaxy side must do besides pasting the entry.
-    assert "security group" in page
-    assert "<code>5671</code>" in page
+    assert "byoc_pulsar" in page
+    assert "src_galaxy_pulsar_amqp_configs" not in page
+    assert "galaxy-amqp-param" not in page
+    for key, value in form.items():
+        assert f"<dt>{key}</dt>" in page, key
+        assert f"<code>{html.escape(str(value))}</code>" in page, key
+    assert f'<pre id="byoc-password">{PASSWORD}</pre>' in page
+    assert page.count(PASSWORD) == 1
 
 
 def test_welcome_page_shows_the_broker_version_and_storage():
     page = render("welcome.html.j2")
 
-    assert "<code>amqps://galaxy.example.org:5671</code>, user <code>hpc</code>" in page
-    assert "vhost <code>/pulsar/hpc</code>" in page
+    assert "<code>amqps://mq.example.org:5671</code>, user <code>galaxy_hpc_byoc</code>" in page
+    assert "vhost <code>/pulsar/galaxy_hpc_byoc</code>" in page
     assert "0.15.15 on <code>pulsar.example.org</code>" in page
     assert "<code>/data/pulsar_storage/pulsar</code>" in page
     assert "<code>/data/pulsar_storage/pulsar/staging</code>" in page
 
 
-def test_welcome_page_shows_the_broker_host_when_it_differs_from_galaxy():
-    # The broker-host change (#17) adds a `host` key; the page must work with and without it.
-    amqp = resolve("_pulsar_amqp")
-    page = render("welcome.html.j2", _pulsar_amqp={**amqp, "host": "mq.example.org"})
-    assert "<code>amqps://mq.example.org:5671</code>" in page
-    assert "amqps://galaxy.example.org" not in page
-    # An unset parameter is an empty string: the Galaxy host then.
-    page = render("welcome.html.j2", _pulsar_amqp={**amqp, "host": ""})
-    assert "<code>amqps://galaxy.example.org:5671</code>" in page
+def test_welcome_page_follows_the_resolved_credentials():
+    # tasks/credentials.yml replaces _pulsar_amqp (set_fact) with the generated credentials.
+    params = resolve("_pulsar_amqp_params")
+    amqp = resolve("_pulsar_amqp", _pulsar_amqp_params={**params, "name": "srcdeadbeef"})
+
+    page = render("welcome.html.j2", _pulsar_amqp=amqp)
+
+    assert "user <code>galaxy_srcdeadbeef_byoc</code>" in page
+    assert "<dd><code>srcdeadbeef</code></dd>" in page
+    assert "<code>hpc</code>" not in page
+
+
+def test_welcome_page_shows_the_default_broker():
+    # pulsar_amqp_host unset (an empty string from SRC): usegalaxy.eu's broker.
+    page = render("welcome.html.j2", pulsar_amqp_host="")
+
+    assert "<code>amqps://mq.galaxyproject.eu:5671</code>" in page
+    assert "mq.example.org" not in page
 
 
 def test_welcome_page_shows_the_troubleshooting_commands():
@@ -333,25 +343,6 @@ def test_welcome_page_keeps_the_notice_and_noindex():
     assert "members" in page
 
 
-def test_welcome_page_shows_the_galaxy_host_as_the_broker():
-    # pulsar_amqp_host unset (an empty string from SRC): the broker is the Galaxy host.
-    page = render("welcome.html.j2", pulsar_amqp_host="")
-
-    assert "<code>amqps://galaxy.example.org:5671</code>" in page
-    assert page == render("welcome.html.j2")
-
-
-def test_welcome_page_shows_a_separate_broker_host():
-    page = render(
-        "welcome.html.j2", pulsar_galaxy_fqdn="usegalaxy.eu", pulsar_amqp_host="mq.galaxyproject.eu"
-    )
-
-    assert "<code>amqps://mq.galaxyproject.eu:5671</code>" in page
-    assert "amqps://usegalaxy.eu" not in page
-    # Galaxy's own name still identifies the workspace the entry belongs to.
-    assert "the Galaxy workspace <code>usegalaxy.eu</code>" in page
-
-
 def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
     # The page is published before the broker check, so it must not report its result.
     assert "checked that" not in render("welcome.html.j2")
@@ -363,7 +354,7 @@ def test_welcome_page_does_not_claim_a_check_that_may_have_failed():
         "workspace_fqdn",
         "pulsar_manager",
         "pulsar_amqp_name",
-        "pulsar_galaxy_fqdn",
+        "pulsar_amqp_host",
         "pulsar_version",
     ],
 )

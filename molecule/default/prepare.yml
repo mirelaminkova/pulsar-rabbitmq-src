@@ -10,10 +10,10 @@
         (apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -q -y python3)
       changed_when: false
 
-# A test CA and a certificate for the Galaxy workspace's hostname, standing in for the
-# certificate of the SRC Nginx plugin (Let's Encrypt or ZeroSSL) the Galaxy component's
-# RabbitMQ uses. Pulsar trusts the CA through the system CA bundle, as it trusts a public CA
-# on SRC: its certificate and hostname verification stay on.
+# A test CA and a certificate for the broker's hostname, standing in for the public
+# certificate of the Galaxy's RabbitMQ (mq.galaxyproject.eu). Pulsar trusts the CA through
+# the system CA bundle, as it trusts a public CA on SRC: its certificate and hostname
+# verification stay on.
 - name: Create the test CA and the Galaxy workspace's certificate
   hosts: localhost
   connection: local
@@ -75,9 +75,10 @@
                -extfile, "{{ tls_dir }}/server.ext", -out, "{{ tls_dir }}/server.pem"]
         creates: "{{ tls_dir }}/server.pem"
 
-# The Galaxy component's RabbitMQ as tasks/rabbitmq.yml in src-component-galaxy-amqp sets it
-# up: Ubuntu's package, its rabbitmq.conf (tests/galaxy_contract/), node rabbit@localhost, no
-# guest user, the entry's vhost /pulsar/<name> and user <name>, and Galaxy's own user.
+# The Galaxy's RabbitMQ, with what byoc-sync's pull request creates for this Pulsar once
+# merged and deployed (templates/eu/mq_user.yml.j2): user galaxy_<name>_byoc with the
+# form's password on vhost /pulsar/galaxy_<name>_byoc. Ubuntu's package, AMQPS only
+# (rabbitmq.conf.j2), node rabbit@localhost, no guest user.
 - name: Prepare the Galaxy workspace
   hosts: galaxy_workspace
   gather_facts: false
@@ -86,11 +87,9 @@
     pulsar: "{{ hostvars['pulsar'] }}"
     vhost: "{{ molecule_vhost }}"
     node: "{{ molecule_rabbitmq_node }}"
-    # The Galaxy component's vars/rabbitmq_vars.yml, which its rabbitmq.conf.j2 uses.
-    _galaxy_rabbitmq_local_port: 5672
-    _galaxy_rabbitmq_port: "{{ pulsar.pulsar_amqp_port }}"
-    _galaxy_rabbitmq_tls_dir: /etc/rabbitmq/tls
-    _galaxy_rabbitmq_tls_versions: [tlsv1.3, tlsv1.2]
+    molecule_rabbitmq_port: "{{ pulsar.pulsar_amqp_port }}"
+    molecule_rabbitmq_tls_dir: /etc/rabbitmq/tls
+    molecule_rabbitmq_tls_versions: [tlsv1.3, tlsv1.2]
   tasks:
     - name: Create the rabbitmq group
       ansible.builtin.group:
@@ -113,11 +112,11 @@
         owner: root
         group: rabbitmq
         mode: '0750'
-      loop: [/etc/rabbitmq, "{{ _galaxy_rabbitmq_tls_dir }}"]
+      loop: [/etc/rabbitmq, "{{ molecule_rabbitmq_tls_dir }}"]
 
     - name: Install the certificate chain and key
       ansible.builtin.copy:
-        dest: "{{ _galaxy_rabbitmq_tls_dir }}/{{ item.dest }}"
+        dest: "{{ molecule_rabbitmq_tls_dir }}/{{ item.dest }}"
         content: "{{ item.content }}"
         owner: root
         group: rabbitmq
@@ -130,9 +129,9 @@
       loop_control:
         label: "{{ item.dest }}"
 
-    - name: Configure RabbitMQ with the Galaxy component's template
+    - name: Configure RabbitMQ for AMQPS
       ansible.builtin.template:
-        src: ../../tests/galaxy_contract/rabbitmq.conf.j2
+        src: rabbitmq.conf.j2
         dest: /etc/rabbitmq/rabbitmq.conf
         owner: root
         group: rabbitmq
@@ -178,25 +177,20 @@
       changed_when: _vhost.rc == 0
       failed_when: _vhost.rc != 0 and 'already' not in _vhost.stderr
 
-    # Passwords on stdin, as the Galaxy component sets them.
-    - name: Create the Pulsar's user and Galaxy's user
+    # The password on stdin, never on a command line.
+    - name: Create the Pulsar's BYOC user
       ansible.builtin.command:
-        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_user, "{{ item.name }}"]
-        stdin: "{{ item.password }}"
-      loop:
-        - {name: "{{ pulsar.pulsar_amqp_name }}", password: "{{ pulsar.pulsar_amqp_password }}"}
-        - {name: galaxy, password: "{{ molecule_galaxy_amqp_password }}"}
-      loop_control:
-        label: "{{ item.name }}"
-      register: _users
-      changed_when: _users.rc == 0
-      failed_when: _users.rc != 0 and 'already' not in _users.stderr
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, add_user, "{{ molecule_mq_user }}"]
+        stdin: "{{ pulsar.pulsar_amqp_password }}"
+      register: _user
+      changed_when: _user.rc == 0
+      failed_when: _user.rc != 0 and 'already' not in _user.stderr
       no_log: true
 
-    - name: Give both users the Pulsar's vhost
+    # Galaxy's runner connects as the same user (byoc-sync's runner.yml.j2).
+    - name: Give the BYOC user its vhost
       ansible.builtin.command:
-        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, set_permissions, -p, "{{ vhost }}", "{{ item }}", ".*", ".*", ".*"]
-      loop: ["{{ pulsar.pulsar_amqp_name }}", galaxy]
+        argv: [rabbitmqctl, -n, "{{ node }}", --quiet, set_permissions, -p, "{{ vhost }}", "{{ molecule_mq_user }}", ".*", ".*", ".*"]
       changed_when: true
 
     - name: Create the Galaxy client's directory
@@ -222,8 +216,11 @@
         virtualenv: /opt/galaxy-client/venv
         virtualenv_command: /usr/bin/python3 -m venv
 
-- name: Prepare the Pulsar workspace
-  hosts: pulsar_workspace
+# Pulsar verifies the broker's certificate against the system CA bundle; so does Galaxy's
+# client with the runner's `?ssl=1` (py-amqp's default TLS client context, without the
+# hostname check), as on usegalaxy.eu with a public CA.
+- name: Trust the test CA on both workspaces
+  hosts: all
   gather_facts: false
   vars:
     tls_dir: "{{ molecule_tls_dir }}"
@@ -243,6 +240,16 @@
         mode: '0644'
       notify: Update the system CA bundle
 
+  handlers:
+    - name: Update the system CA bundle
+      ansible.builtin.command:
+        argv: [update-ca-certificates]
+      changed_when: true
+
+- name: Prepare the Pulsar workspace
+  hosts: pulsar_workspace
+  gather_facts: false
+  tasks:
     # SRC mounts an attached volume at /data/<volume name>; here the runner's ext4 volume.
     - name: Check that the storage is a separate mount
       ansible.builtin.command:
@@ -250,9 +257,3 @@
       register: _storage_mount
       changed_when: false
       failed_when: _storage_mount.stdout | trim != 'ext4'
-
-  handlers:
-    - name: Update the system CA bundle
-      ansible.builtin.command:
-        argv: [update-ca-certificates]
-      changed_when: true

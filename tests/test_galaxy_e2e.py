@@ -15,9 +15,7 @@ import yaml
 from pulsar.core import PulsarApp
 
 from tests.e2e import galaxy_config, galaxy_job
-from tests.helpers import PASSWORD, render, resolve
-
-GALAXY_PASSWORD = "Galaxy.Pass_word~456"  # noqa: S105 - test value
+from tests.helpers import PASSWORD, URL, render
 
 
 def render_app_yml(**params):
@@ -25,49 +23,61 @@ def render_app_yml(**params):
 
 
 @pytest.fixture
-def entry():
-    return resolve("_pulsar_amqp")["galaxy_entry"]
+def params():
+    return {}
 
 
-def test_runner_and_destination_are_galaxys(entry):
-    config = galaxy_config.galaxy_job_config(entry, GALAXY_PASSWORD, "https://galaxy.example.org")
+def test_runner_and_destination_are_byoc_syncs():
+    config = galaxy_config.galaxy_job_config({}, "https://usegalaxy.eu")
 
     assert config["runner"] == {
         "load": "galaxy.jobs.runners.pulsar:PulsarMQJobRunner",
-        # Galaxy's own user, over plain AMQP on its loopback listener, on our vhost.
-        "amqp_url": f"pyamqp://galaxy:{GALAXY_PASSWORD}@127.0.0.1:5672//pulsar/hpc",
-        "galaxy_url": "https://galaxy.example.org",
-        "manager": "_default_",
-        "amqp_acknowledge": True,
-        "amqp_ack_republish_time": 1200,
+        # Galaxy connects as this Pulsar's own user; its ?ssl=1 verifies the certificate
+        # chain but not the hostname (py-amqp's default context); Pulsar's side verifies
+        # both (test_pulsar_compat).
+        "amqp_url": f"{URL}?ssl=1",
+        "galaxy_url": "https://usegalaxy.eu",
+        "manager": "production",
+        "amqp_acknowledge": "true",
+        "amqp_ack_republish_time": 300,
         "amqp_consumer_timeout": 2.0,
-        "amqp_publish_retry": True,
+        "amqp_publish_retry": "true",
         "amqp_publish_retry_max_retries": 60,
     }
     destination = config["destination"]
     # Galaxy stages into our storage's staging directory, Pulsar's staging_directory.
     assert destination["jobs_directory"] == "/data/pulsar_storage/pulsar/staging"
     assert destination["jobs_directory"] == render_app_yml()["staging_directory"]
-    assert destination["default_file_action"] == "remote_transfer"
-    assert destination["singularity_enabled"] is True
-    assert destination["docker_enabled"] is False
+    assert destination["persistence_directory"] == render_app_yml()["persistence_directory"]
+    assert set(destination) == {"jobs_directory", "persistence_directory"}
 
 
-def test_an_invalid_entry_is_refused():
-    with pytest.raises(ValueError, match="'name' is required"):
-        galaxy_config.galaxy_job_config("[{password: x}]", GALAXY_PASSWORD, "http://g.test")
+def test_invalid_parameters_are_refused():
+    with pytest.raises(ValueError, match="pulsar_amqp_name"):
+        galaxy_config.galaxy_job_config({"pulsar_amqp_name": "hpc_byoc"}, "http://g.test")
 
 
-def test_config_command_line(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv("GALAXY_AMQP_PASSWORD", GALAXY_PASSWORD)
+def test_empty_credentials_are_refused():
+    # The playbook generates them; the end-to-end test needs the ones it used.
+    with pytest.raises(ValueError, match="pulsar_amqp_name and pulsar_amqp_password"):
+        galaxy_config.galaxy_job_config({"pulsar_amqp_password": ""}, "http://g.test")
+
+
+def test_config_command_line(capsys, tmp_path):
     params = tmp_path / "params.yml"
-    params.write_text("pulsar_amqp_name: molecule\npulsar_storage_path: /data/molecule/pulsar\n")
+    params.write_text(
+        "pulsar_amqp_host: galaxy.molecule.test\npulsar_amqp_name: molecule\n"
+        "pulsar_amqp_password: MoleculePulsar1234\npulsar_storage_path: /data/molecule/pulsar\n"
+    )
 
     galaxy_config.main([str(params), "http://galaxy.test:8080"])
 
     config = json.loads(capsys.readouterr().out)
     assert config["runner"]["galaxy_url"] == "http://galaxy.test:8080"
-    assert config["runner"]["amqp_url"].endswith("@127.0.0.1:5672//pulsar/molecule")
+    assert config["runner"]["amqp_url"] == (
+        "pyamqp://galaxy_molecule_byoc:MoleculePulsar1234@galaxy.molecule.test:5671"
+        "//pulsar/galaxy_molecule_byoc?ssl=1"
+    )
     assert config["destination"]["jobs_directory"] == "/data/molecule/pulsar/staging"
     assert PASSWORD not in json.dumps(config)
 
@@ -115,19 +125,19 @@ def pulsar(tmp_path, monkeypatch):
     app.shutdown(timeout=5)
 
 
-def config_for(pulsar, entry):
+def config_for(pulsar, params):
     # Port 0: the job files API takes a free port.
-    config = galaxy_config.galaxy_job_config(entry, GALAXY_PASSWORD, "http://127.0.0.1:0")
+    config = galaxy_config.galaxy_job_config(params, "http://127.0.0.1:0")
     config["runner"]["amqp_url"] = pulsar["url"]
     config["destination"]["jobs_directory"] = str(pulsar["staging"])
     return config
 
 
-def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path, monkeypatch):
+def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, params, tmp_path, monkeypatch):
     # The local runner polls every 0.5 s; the 10 s are for Slurm.
     monkeypatch.setattr(galaxy_job, "RUNNING_SECONDS", 2)
     result = galaxy_job.run_job(
-        config_for(pulsar, entry), timeout=60, root=tmp_path, bind="127.0.0.1"
+        config_for(pulsar, params), timeout=60, root=tmp_path, bind="127.0.0.1"
     )
 
     assert (result["status"], result["returncode"]) == ("complete", 0), result
@@ -142,10 +152,10 @@ def test_a_job_runs_and_its_outputs_come_back_over_http(pulsar, entry, tmp_path,
     assert result["received"]["output"] == "galaxy\npulsar\nrabbitmq\n"
 
 
-def test_main_reports_a_failed_job(pulsar, entry, tmp_path, monkeypatch, capsys):
+def test_main_reports_a_failed_job(pulsar, params, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(galaxy_job, "COMMAND", "exit 3; {input} {output} {report}")
     path = tmp_path / "config.json"
-    path.write_text(json.dumps(config_for(pulsar, entry)))
+    path.write_text(json.dumps(config_for(pulsar, params)))
 
     assert galaxy_job.main([str(path), "--timeout", "60", "--bind", "127.0.0.1"]) == 1
 
@@ -155,8 +165,8 @@ def test_main_reports_a_failed_job(pulsar, entry, tmp_path, monkeypatch, capsys)
     assert result["report"] == {}
 
 
-def test_a_job_without_a_final_status_times_out(pulsar, entry, tmp_path):
-    config = config_for(pulsar, entry)
+def test_a_job_without_a_final_status_times_out(pulsar, params, tmp_path):
+    config = config_for(pulsar, params)
     # No Pulsar consumes this manager's queues.
     config["runner"]["manager"] = "nobody"
 

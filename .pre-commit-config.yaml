@@ -12,11 +12,11 @@ default_language_version:
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
-    # tests/galaxy_contract/ holds files vendored byte-for-byte from the Galaxy component:
+    # tests/byoc_contract/ holds files vendored byte-for-byte from byoc-sync:
     # excluded from the fixers and linters, but its changes still run pytest.
     hooks:
       - id: trailing-whitespace
-        exclude: &vendored ^tests/galaxy_contract/
+        exclude: &vendored ^tests/byoc_contract/
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
         exclude: *vendored

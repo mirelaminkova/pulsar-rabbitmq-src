@@ -17,9 +17,9 @@ addopts = [
 [tool.coverage.run]
 branch = true
 # What is measured: the deploy-time broker check, the playbook's filter plugins and the
-# test helpers. tests/galaxy_contract/ is a vendored copy of the Galaxy component's parser.
+# test helpers. tests/byoc_contract/ is a vendored copy of byoc-sync's naming and validation.
 source_dirs = ["files", "filter_plugins", "tests"]
-omit = ["tests/test_*.py", "tests/galaxy_contract/*"]
+omit = ["tests/test_*.py", "tests/byoc_contract/*"]
 
 [tool.coverage.report]
 show_missing = true
@@ -28,8 +28,8 @@ skip_covered = false
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# Vendored byte-for-byte from the Galaxy component (checked by tests/test_galaxy_contract.py).
-extend-exclude = ["tests/galaxy_contract"]
+# Vendored byte-for-byte from byoc-sync (checked by tests/test_byoc_contract.py).
+extend-exclude = ["tests/byoc_contract"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "PT", "SIM", "RUF"]

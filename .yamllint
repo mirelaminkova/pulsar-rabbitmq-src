@@ -6,8 +6,8 @@ extends: default
 ignore: |
   .venv/
   .ansible/
-  .galaxy-amqp/
-  tests/galaxy_contract/
+  .byoc-sync/
+  tests/byoc_contract/
 
 rules:
   comments:

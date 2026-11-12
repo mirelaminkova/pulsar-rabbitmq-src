@@ -1,7 +1,7 @@
 ---
-# Two SRC test workspaces on one network, as a Galaxy workspace and this Pulsar's:
-# - galaxy: the Galaxy component's RabbitMQ (Galaxy's rabbitmq.conf, TLS with a test CA, user
-#   and vhost of the entry), the Galaxy client of tests/e2e/ and its job files API;
+# Two SRC test workspaces on one network, as a Galaxy's broker host and this Pulsar's:
+# - galaxy: the Galaxy's RabbitMQ (rabbitmq.conf.j2, TLS with a test CA, the BYOC user and
+#   vhost byoc-sync would create), the Galaxy client of tests/e2e/ and its job files API;
 # - pulsar: this playbook with pulsar_job_runner slurm and the storage on a separate mount.
 # Docker rather than Galaxy's podman: rootful and privileged, for systemd, Slurm and an ext4
 # volume of the runner mounted at /data/molecule (MOLECULE_STORAGE, see .github/workflows).
@@ -45,16 +45,18 @@ provisioner:
       all:
         # Test CA, Galaxy workspace certificate and key (prepare.yml), on the controller.
         molecule_tls_dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tls"
-        # The Galaxy component's RabbitMQ node (_galaxy_rabbitmq_node).
         molecule_rabbitmq_node: rabbit@localhost
-        molecule_vhost: "/pulsar/{{ hostvars['pulsar'].pulsar_amqp_name }}"
+        # byoc-sync's names for the BYOC name (tests/byoc_contract/naming.py).
+        molecule_mq_user: "galaxy_{{ hostvars['pulsar'].pulsar_amqp_name }}_byoc"
+        molecule_vhost: "/pulsar/{{ molecule_mq_user }}"
     host_vars:
-      # Component parameters, as SRC passes them (host vars beat group_vars/all.yml).
+      # Component parameters, as SRC passes them (host vars beat group_vars/all.yml). The
+      # name and password are given: the end-to-end test needs them for Galaxy's runner.
       pulsar:
-        pulsar_galaxy_fqdn: galaxy.molecule.test
+        pulsar_amqp_host: galaxy.molecule.test
         pulsar_amqp_port: "5671"
         pulsar_amqp_name: molecule
-        pulsar_amqp_password: Molecule.Pulsar-1234
+        pulsar_amqp_password: MoleculePulsar1234
         pulsar_manager: ""
         pulsar_storage_path: /data/molecule/pulsar
         pulsar_job_runner: slurm
@@ -63,8 +65,6 @@ provisioner:
         pulsar_docker: "false"
         pulsar_configure_src_proxy: false
       galaxy:
-        # Galaxy's own RabbitMQ user (job_conf.yml's amqp_url), as /etc/galaxy-rabbitmq/galaxy.pass.
-        molecule_galaxy_amqp_password: Molecule.Galaxy-5678
         molecule_galaxy_url: http://galaxy.molecule.test:8080
 scenario:
   # Dependencies come from the workflow (requirements.yml, molecule/default/requirements.yml).

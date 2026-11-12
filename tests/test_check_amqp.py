@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from tests.helpers import PASSWORD, REPO, render
+from tests.helpers import MQ_USER, PASSWORD, REPO, VHOST, render
 
 SCRIPT = REPO / "files" / "check_amqp.py"
 SPEC = importlib.util.spec_from_file_location("check_amqp", SCRIPT)
@@ -71,8 +71,8 @@ def test_consumer_on_setup_queue():
 
     result = run_check(channel)
 
-    assert_result(result, check_amqp.OK, "pulsar__setup", "/pulsar/hpc")
-    assert channel.declared == [("pulsar__setup", True)]
+    assert_result(result, check_amqp.OK, "pulsar_production__setup", VHOST)
+    assert channel.declared == [("pulsar_production__setup", True)]
 
 
 def test_manager_comes_from_app_yml():
@@ -99,11 +99,13 @@ def test_a_broken_run_is_not_retried(argv):
 
 
 def test_queue_without_consumer_is_retried():
-    assert_result(run_check(FakeChannel(result=0)), check_amqp.RETRY, "pulsar__setup")
+    assert_result(run_check(FakeChannel(result=0)), check_amqp.RETRY, "pulsar_production__setup")
 
 
 def test_missing_queue_is_retried():
-    error = amqp_exceptions.NotFound("NOT_FOUND - no queue 'pulsar__setup' in vhost '/pulsar/hpc'")
+    error = amqp_exceptions.NotFound(
+        f"NOT_FOUND - no queue 'pulsar_production__setup' in vhost '{VHOST}'"
+    )
     assert_result(run_check(FakeChannel(error=error)), check_amqp.RETRY, "journalctl -u pulsar")
 
 
@@ -112,17 +114,16 @@ def test_login_refused():
     assert_result(
         run_check(connect_error=error),
         check_amqp.FAILED,
-        "hpc",
+        MQ_USER,
+        "pulsar_amqp_name",
         "pulsar_amqp_password",
-        "src_galaxy_pulsar_amqp_configs",
+        "byoc_pulsar",
     )
 
 
 def test_vhost_not_allowed():
-    error = amqp_exceptions.NotAllowed("NOT_ALLOWED - access to vhost '/pulsar/hpc' refused")
-    assert_result(
-        run_check(connect_error=error), check_amqp.FAILED, "/pulsar/hpc", "pulsar_amqp_name"
-    )
+    error = amqp_exceptions.NotAllowed(f"NOT_ALLOWED - access to vhost '{VHOST}' refused")
+    assert_result(run_check(connect_error=error), check_amqp.FAILED, VHOST, MQ_USER, "byoc_pulsar")
 
 
 def test_unknown_host():
@@ -130,33 +131,23 @@ def test_unknown_host():
     assert_result(
         run_check(connect_error=error),
         check_amqp.FAILED,
-        "galaxy.example.org",
-        "pulsar_galaxy_fqdn",
+        "mq.example.org",
+        "pulsar_amqp_host",
     )
 
 
-EU = {"pulsar_galaxy_fqdn": "usegalaxy.eu", "pulsar_amqp_host": "mq.galaxyproject.eu"}
+EU = {"pulsar_amqp_host": "mq.galaxyproject.eu"}
 
 
-def test_unknown_host_names_the_broker_host_parameter():
-    error = socket.gaierror(-2, "Name or service not known")
-
-    result = run_check(connect_error=error, conf=app_yml(EU))
-
-    assert_result(result, check_amqp.FAILED, "mq.galaxyproject.eu", "pulsar_amqp_host")
-    assert "usegalaxy.eu" not in result[1]
-
-
-def test_messages_show_the_broker_not_the_galaxy_host():
+def test_messages_show_the_broker_host():
     result = run_check(FakeChannel(result=1), conf=app_yml(EU))
 
-    assert_result(result, check_amqp.OK, "mq.galaxyproject.eu:5671")
-    assert "usegalaxy.eu" not in result[1]
+    assert_result(result, check_amqp.OK, "mq.galaxyproject.eu:5671", MQ_USER)
 
 
 def test_temporary_dns_failure_is_retried():
     error = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
-    assert_result(run_check(connect_error=error), check_amqp.RETRY, "galaxy.example.org")
+    assert_result(run_check(connect_error=error), check_amqp.RETRY, "mq.example.org")
 
 
 @pytest.mark.parametrize(
@@ -168,13 +159,13 @@ def test_unreachable_broker_is_retried(error):
     assert_result(
         run_check(connect_error=error),
         check_amqp.RETRY,
-        "galaxy.example.org:5671",
-        "src_galaxy_rabbitmq",
+        "mq.example.org:5671",
+        "allow this workspace",
     )
 
 
 def test_unexpected_errors_never_show_the_password():
-    result = run_check(connect_error=RuntimeError(f"pyamqp://hpc:{PASSWORD}@galaxy.example.org"))
+    result = run_check(connect_error=RuntimeError(f"pyamqp://{MQ_USER}:{PASSWORD}@mq.example.org"))
     assert_result(result, check_amqp.FAILED, "RuntimeError")
 
 
@@ -208,7 +199,7 @@ def closed_port():
 def test_script_exits_with_the_check_status(tmp_path, monkeypatch, capsys):
     # As the playbook runs it: `python check_amqp.py app.yml`, retried while it exits 75.
     path = tmp_path / "app.yml"
-    url = f"pyamqp://hpc:{PASSWORD}@127.0.0.1:{closed_port()}//pulsar/hpc"
+    url = f"pyamqp://{MQ_USER}:{PASSWORD}@127.0.0.1:{closed_port()}/{VHOST}"
     path.write_text(yaml.safe_dump(app_yml(message_queue_url=url)))
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(path)])
 
@@ -322,9 +313,9 @@ def tls_check(tmp_path, ca):
         server = TlsServer(tmp_path, cert_name, *ca)
         servers.append(server)
         # Connect to the local server; the TLS settings stay as rendered, so the
-        # hostname checked is still the broker's (pulsar_galaxy_fqdn, galaxy.example.org,
-        # unless params set pulsar_amqp_host).
-        url = f"pyamqp://hpc:{PASSWORD}@127.0.0.1:{server.port}//pulsar/hpc"
+        # hostname checked is still the broker's (pulsar_amqp_host, mq.example.org,
+        # unless params say otherwise).
+        url = f"pyamqp://{MQ_USER}:{PASSWORD}@127.0.0.1:{server.port}/{VHOST}"
         conf = app_yml(
             params,
             message_queue_url=url,
@@ -338,7 +329,7 @@ def tls_check(tmp_path, ca):
 
 
 def test_matching_certificate_passes_tls(tls_check):
-    code, message = tls_check("galaxy.example.org")
+    code, message = tls_check("mq.example.org")
 
     # TLS succeeded; the local server then closes instead of speaking AMQP.
     assert code == check_amqp.RETRY, message
@@ -350,7 +341,8 @@ def test_certificate_for_another_host_is_rejected(tls_check):
 
     assert code == check_amqp.FAILED, message
     assert "certificate" in message
-    assert "galaxy.example.org" in message
+    assert "mq.example.org" in message
+    assert "pulsar_amqp_host" in message
 
 
 def test_certificate_for_the_broker_host_passes_tls(tls_check):
@@ -360,8 +352,8 @@ def test_certificate_for_the_broker_host_passes_tls(tls_check):
     assert "certificate" not in message
 
 
-def test_certificate_for_the_galaxy_host_is_rejected_with_a_separate_broker(tls_check):
-    # With pulsar_amqp_host, Galaxy's own name is no longer the one verified.
+def test_certificate_for_the_galaxy_host_is_rejected(tls_check):
+    # The Galaxy server's own name is not the broker's: only pulsar_amqp_host is verified.
     code, message = tls_check("usegalaxy.eu", params=EU)
 
     assert code == check_amqp.FAILED, message
@@ -373,7 +365,7 @@ def test_certificate_for_the_galaxy_host_is_rejected_with_a_separate_broker(tls_
 def test_untrusted_certificate_is_rejected(tls_check):
     # The system CA bundle, as on the workspace, does not trust the test CA.
     code, message = tls_check(
-        "galaxy.example.org",
+        "mq.example.org",
         ca_certs=ssl.get_default_verify_paths().cafile or "/etc/ssl/certs/ca-certificates.crt",
     )
 
@@ -385,7 +377,7 @@ def test_plain_amqp_port_is_a_tls_failure():
     # pulsar_amqp_port set to RabbitMQ's plain port: the server does not speak TLS.
     server = PlainAmqpServer()
     try:
-        url = f"pyamqp://hpc:{PASSWORD}@127.0.0.1:{server.port}//pulsar/hpc"
+        url = f"pyamqp://{MQ_USER}:{PASSWORD}@127.0.0.1:{server.port}/{VHOST}"
         code, message = check_amqp.check(app_yml(message_queue_url=url))
     finally:
         server.close()

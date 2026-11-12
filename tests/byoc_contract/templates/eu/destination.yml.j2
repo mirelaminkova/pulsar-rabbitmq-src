@@ -1,0 +1,23 @@
+[[ names.destination_id ]]:
+  inherits: pulsar_default
+  runner: [[ names.runner_id ]]
+  max_accepted_cores: [[ req.max_cores ]]
+  max_accepted_mem: [[ req.max_mem ]]
+  min_accepted_gpus: [[ req.min_gpus ]]
+  max_accepted_gpus: [[ req.max_gpus ]]
+[% if req.nfs_path %]
+  env:
+    SINGULARITY_CACHEDIR: [[ (req.nfs_path ~ "/var/database/container_cache") | q ]]
+  params:
+    jobs_directory: [[ (req.nfs_path ~ "/staging") | q ]]
+    persistence_directory: [[ (req.nfs_path ~ "/persisted_data") | q ]]
+[% endif %]
+  scheduling:
+    require:
+      - [[ names.tag ]]
+  rules:
+    - id: byoc-owner-guard
+      if: [[ ("user is None or user.email != " ~ (email | pystr)) | q ]]
+      execute: |
+        from tpv.core.entities import TryNextDestinationOrFail
+        raise TryNextDestinationOrFail("[[ names.destination_id ]] only accepts jobs of its owner")

@@ -1,25 +1,28 @@
-"""Connection settings for a Pulsar that consumes jobs from the Galaxy component's RabbitMQ.
+"""Connection settings for a BYOC Pulsar that consumes jobs from a Galaxy's RabbitMQ.
 
 Loaded automatically by Ansible because this directory sits next to playbook.yml.
 
-The Galaxy side (mirelaminkova/src-component-galaxy-amqp) is the contract: for each
-``src_galaxy_pulsar_amqp_configs`` entry ``<name>`` it creates RabbitMQ user ``<name>``,
-vhost ``/pulsar/<name>`` and environment ``amqp_<name>``. The rules below are those of
-its parser (``filter_plugins/src_galaxy.py``); tests/test_parameters.py checks that both
-accept the same values, apart from the stricter hostname rule. Galaxy's ``jobs_directory``
-is not a parameter here: it is derived from the required storage path, so the two
-cannot disagree.
+The byoc-sync pipeline (sanjaysrikakulam/elixir_biohackathon_2026_project1, byoc-sync/) is
+the contract: the user enters this Pulsar's BYOC name and password in the ``byoc_pulsar``
+section of their Galaxy preferences, and byoc-sync creates RabbitMQ user
+``galaxy_<name>_byoc``, vhost ``/pulsar/galaxy_<name>_byoc`` and a runner with manager
+``production`` for it (its ``naming.py``). The rules below for the name and the password are
+those of its ``validate.py``; tests/test_byoc_contract.py checks that both accept the same
+values. The form's ``nfs_path`` is the storage directory, so Galaxy's ``jobs_directory``
+(``<nfs_path>/staging``) cannot disagree with Pulsar's staging directory.
 """
 
 import os
 import re
 
 DEFAULTS = {
-    "port": 5671,  # src_galaxy_rabbitmq_port
-    # Galaxy's runner (job_conf.yml.j2) and Pulsar republish an unacknowledged message
-    # after this many seconds; usegalaxy.eu's runners use 300.
-    "ack_republish_time": 1200,
-    "manager": "_default_",
+    # usegalaxy.eu's broker (byoc-sync's sites/eu.yml).
+    "host": "mq.galaxyproject.eu",
+    "port": 5671,
+    # byoc-sync's runner: Galaxy and Pulsar republish an unacknowledged message after this
+    # many seconds.
+    "ack_republish_time": 300,
+    "manager": "production",
     "docker_enabled": False,
     "singularity_enabled": True,
     "cvmfs": True,
@@ -28,24 +31,23 @@ DEFAULTS = {
 # pulsar_job_runner: Slurm on this workspace through DRMAA, or Pulsar itself.
 _JOB_RUNNERS = ("slurm", "local")
 
-# As in Galaxy's parser.
-_NAME = re.compile(r"[a-z0-9_-]+")
+# byoc-sync's validate.py: NAME_RE and PASSWORD_RE, and the name's extra rules.
+_NAME = re.compile(r"[a-z][a-z0-9_]{2,31}")
+_PASSWORD = re.compile(r"[A-Za-z0-9]{10,128}")
+# byoc-sync's nfs_path (the storage directory) is at most this long.
+_NFS_PATH_MAX = 255
 _MANAGER = re.compile(r"[A-Za-z0-9_-]+")
-_PASSWORD = re.compile(r"[A-Za-z0-9._~-]{12,}")
-_RESERVED_NAMES = ("galaxy", "guest")
-# Galaxy's one-line parser turns these bare values into booleans, which it then rejects.
+# YAML would read these bare values as booleans.
 _BOOLEAN_WORDS = ("true", "false")
 # A directory on an attached volume, which SRC mounts at /data/<volume name>: below the
 # mount point (the playbook makes the storage directory root's), never a system
-# directory or Pulsar's installation. Galaxy's jobs_directory (`/\S*` there) is
-# <storage>/staging, so the value must also survive the one-line SRC format.
+# directory or Pulsar's installation. Stricter than byoc-sync's nfs_path rule
+# (^/[A-Za-z0-9._/-]*$, no // and no . or .. segments), so every accepted value passes it.
 _STORAGE_PATH = re.compile(r"/data(?:/[A-Za-z0-9_.-]+){2,}")
 # The mount point itself, as users tend to enter it: its "pulsar" directory is used.
 _MOUNT_POINT = re.compile(r"/data/([A-Za-z0-9_.-]+)/?")
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _FQDN = re.compile(rf"(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+")
-# Galaxy's _galaxy_rabbitmq_reserved_ports: RabbitMQ's own, Nginx's and Galaxy's ports.
-_RESERVED_PORTS = (5672, 4369, 25672, 80, 443, 8080)
 _BOOLEANS = {True: True, False: False, "true": True, "false": False}
 # ASCII digits only: str.isdigit() also accepts superscripts, which int() refuses. Ten
 # digits at most: int() refuses thousands, and nothing longer is a port or a time.
@@ -87,21 +89,19 @@ def _storage_directory(value):
 
 
 def pulsar_amqp_settings(params):
-    """Normalise the component parameters and derive the names Galaxy and Pulsar use.
+    """Normalise the component parameters and derive the names byoc-sync and Pulsar use.
 
-    ``params`` has the keys galaxy_fqdn, host, port, name, password, manager, storage_path,
+    ``params`` has the keys host, port, name, password, manager, storage_path,
     docker_enabled, singularity_enabled, cvmfs, job_runner and ack_republish_time. Empty
-    values (how SRC passes an unset parameter) get Galaxy's defaults, or this component's
-    for cvmfs and job_runner. The broker ``host`` is the Galaxy host unless set: the Galaxy
-    component runs RabbitMQ on the Galaxy workspace, usegalaxy.eu's Pulsar Network on a host
-    of its own (mq.galaxyproject.eu). A volume's mount point as storage_path stands for its
-    ``pulsar`` directory. The result is meaningful only without :func:`pulsar_amqp_errors`.
+    values (how SRC passes an unset parameter) get usegalaxy.eu's defaults, or this
+    component's for cvmfs and job_runner. An empty ``name`` or ``password`` stays empty:
+    tasks/credentials.yml generates or loads them and calls this again. A volume's mount
+    point as storage_path stands for its ``pulsar`` directory. The result is meaningful only
+    without :func:`pulsar_amqp_errors`.
     """
-    galaxy_fqdn = _text(params.get("galaxy_fqdn")).lower()
     settings = {
-        "galaxy_fqdn": galaxy_fqdn,
         # The RabbitMQ host: the URL's host and the name its certificate is checked for.
-        "host": _text(params.get("host")).lower() or galaxy_fqdn,
+        "host": _text(params.get("host")).lower() or DEFAULTS["host"],
         "port": _integer(params.get("port"), DEFAULTS["port"]),
         "ack_republish_time": _integer(
             params.get("ack_republish_time"), DEFAULTS["ack_republish_time"]
@@ -110,7 +110,7 @@ def pulsar_amqp_settings(params):
         "password": _text(params.get("password")),
         "manager": _text(params.get("manager")) or DEFAULTS["manager"],
         "storage_path": _storage_directory(_text(params.get("storage_path"))),
-        # Only this workspace sees the runner; Galaxy's entry stays the same.
+        # Only this workspace sees the runner; Galaxy's side stays the same.
         "job_runner": _text(params.get("job_runner")).lower() or DEFAULTS["job_runner"],
     }
     # Galaxy's jobs_directory is Pulsar's staging directory, always on the storage.
@@ -118,97 +118,89 @@ def pulsar_amqp_settings(params):
     for key in ("docker_enabled", "singularity_enabled", "cvmfs"):
         settings[key] = _boolean(params.get(key), DEFAULTS[key])
     name, manager = settings["name"], settings["manager"]
+    # byoc-sync's naming.py: the RabbitMQ user and vhost derived from the BYOC name.
+    mq_user = f"galaxy_{name}_byoc"
     settings.update(
-        vhost=f"/pulsar/{name}",
-        environment=f"amqp_{name}",
+        mq_user=mq_user,
+        vhost=f"/pulsar/{mq_user}",
         # Pulsar's queue for new jobs: "<key prefix>_setup", prefix "pulsar_" for the
         # default manager and "pulsar_<manager>_" otherwise.
         setup_queue="pulsar__setup" if manager == "_default_" else f"pulsar_{manager}__setup",
-        # No `?ssl=1`: kombu would let it replace the amqp_connect_ssl_* settings that
-        # verify the certificate and hostname; those settings switch TLS on by themselves.
+        # No `?ssl=1` (byoc-sync's runner has it): kombu would let it replace the
+        # amqp_connect_ssl_* settings that verify the certificate and hostname; those
+        # settings switch TLS on by themselves.
         url=(
-            f"pyamqp://{name}:{settings['password']}@{settings['host']}:{settings['port']}"
-            f"//pulsar/{name}"
+            f"pyamqp://{mq_user}:{settings['password']}@{settings['host']}:{settings['port']}"
+            f"//pulsar/{mq_user}"
         ),
     )
-    settings["galaxy_entry"] = _galaxy_entry(settings)
     return settings
 
 
-def _galaxy_entry(settings):
-    """The ``src_galaxy_pulsar_amqp_configs`` value for this Pulsar, in SRC's one-line format."""
-    values = {key: settings[key] for key in ("name", "password", "manager", "jobs_directory")}
-    # One container type: with both, Galaxy would prefer Docker, while Apptainer runs
-    # unprivileged and sees /cvmfs through the system-wide bind.
-    if settings["singularity_enabled"] is True:
-        values["singularity_enabled"] = "true"
-    elif settings["docker_enabled"] is True:
-        values["docker_enabled"] = "true"
-    return "[{" + ", ".join(f"{key}: {value}" for key, value in values.items()) + "}]"
+def pulsar_byoc_form(settings, cpus, memory_mb):
+    """The ``byoc_pulsar`` form of Galaxy's preferences for this Pulsar, without the password.
+
+    As the pulsar-byoc playbook's connection summary: every vCPU, 90 % of the memory in GB
+    (at least 1 GB, the least byoc-sync accepts), no GPUs, and the storage directory as
+    ``nfs_path``, from which byoc-sync derives ``jobs_directory`` (``/staging``),
+    ``persistence_directory`` and the container cache.
+    """
+    return {
+        "username": settings["name"],
+        "max_accepted_cores": int(_text(cpus)),
+        "max_accepted_mem": max(1, int(int(_text(memory_mb)) * 0.9 / 1024)),
+        "min_accepted_gpus": 0,
+        "max_accepted_gpus": 0,
+        "nfs_path": settings["storage_path"],
+    }
+
+
+def _name_errors(name):
+    """byoc-sync's rules for the BYOC name (validate.py's _name)."""
+    if not _NAME.fullmatch(name):
+        return "must be 3 to 32 of a-z 0-9 _, starting with a letter"
+    if name.endswith("_") or "__" in name or name.endswith("_byoc"):
+        return "must not end with _ or _byoc and must not contain __"
+    return None
 
 
 def pulsar_amqp_errors(settings):
-    """Return one message per invalid parameter; values of secrets are never included."""
+    """Return one message per invalid parameter; the password is never included."""
     errors = []
 
     def shown(value):
         return _shown(str(value), settings["password"])
 
-    fqdn = settings["galaxy_fqdn"]
-    if not fqdn:
-        errors.append("pulsar_galaxy_fqdn is required: the Galaxy workspace's hostname")
-    elif not _FQDN.fullmatch(fqdn):
-        errors.append(
-            f"pulsar_galaxy_fqdn must be a hostname such as galaxy.example.org "
-            f"(no https:// or port), got '{shown(fqdn)}'"
-        )
-
-    # A host equal to the Galaxy host (empty pulsar_amqp_host) is validated above as
-    # pulsar_galaxy_fqdn.
     host = settings["host"]
-    if host != fqdn and not _FQDN.fullmatch(host):
+    if not _FQDN.fullmatch(host):
         errors.append(
-            f"pulsar_amqp_host must be the RabbitMQ hostname such as mq.galaxyproject.eu "
-            f"(no https:// or port), or empty for the Galaxy host, got '{shown(host)}'"
+            "pulsar_amqp_host must be the RabbitMQ hostname such as mq.galaxyproject.eu "
+            f"(no https:// or port), got '{shown(host)}'"
         )
 
     port = settings["port"]
-    if not (isinstance(port, int) and 1 <= port <= 65535) or port in _RESERVED_PORTS:
+    if not (isinstance(port, int) and 1 <= port <= 65535):
         errors.append(
-            "pulsar_amqp_port must be src_galaxy_rabbitmq_port: an integer from 1 to 65535, "
-            f"not {', '.join(map(str, _RESERVED_PORTS))}, "
+            "pulsar_amqp_port must be the broker's AMQPS port, an integer from 1 to 65535, "
             f"got '{shown(port)}'"
         )
 
+    # Empty: generated by tasks/credentials.yml, which validates the result again.
     name = settings["name"]
-    if not name:
-        errors.append(
-            "pulsar_amqp_name is required: "
-            "the name of this Pulsar in src_galaxy_pulsar_amqp_configs"
-        )
-    elif not _NAME.fullmatch(name) or len(name) > 64 or name in _RESERVED_NAMES + _BOOLEAN_WORDS:
-        errors.append(
-            "pulsar_amqp_name must be at most 64 of a-z 0-9 _ - "
-            "and not galaxy, guest, true or false, "
-            f"got '{shown(name)}'"
-        )
+    if name and (problem := _name_errors(name)):
+        errors.append(f"pulsar_amqp_name {problem} (byoc-sync's rule), got '{shown(name)}'")
 
-    if not settings["password"]:
+    if settings["password"] and not _PASSWORD.fullmatch(settings["password"]):
         errors.append(
-            "pulsar_amqp_password is required: the password of this Pulsar's entry in "
-            "src_galaxy_pulsar_amqp_configs (or /etc/galaxy-rabbitmq/pulsar_<name>.txt on Galaxy)"
-        )
-    elif not _PASSWORD.fullmatch(settings["password"]):
-        errors.append(
-            "pulsar_amqp_password must be at least 12 characters from A-Z a-z 0-9 . _ ~ -"
+            "pulsar_amqp_password must be 10 to 128 letters and digits (A-Z a-z 0-9), "
+            "byoc-sync's rule, or empty for a generated one"
         )
 
     republish = settings["ack_republish_time"]
     if not (isinstance(republish, int) and republish >= 1):
         errors.append(
             "pulsar_amqp_ack_republish_time must be a whole number of seconds, at least 1 "
-            "(1200 for the Galaxy component's runner, 300 for usegalaxy.eu's), "
-            f"got '{shown(republish)}'"
+            f"(300 for byoc-sync's runner), got '{shown(republish)}'"
         )
 
     manager = settings["manager"]
@@ -226,12 +218,14 @@ def pulsar_amqp_errors(settings):
             "/data/<volume name>/pulsar), or to a directory on the volume"
         )
     elif (
-        not _STORAGE_PATH.fullmatch(storage_path) or os.path.normpath(storage_path) != storage_path
+        not _STORAGE_PATH.fullmatch(storage_path)
+        or os.path.normpath(storage_path) != storage_path
+        or len(storage_path) > _NFS_PATH_MAX
     ):
         errors.append(
             "pulsar_storage_path must be an attached storage volume's mount point, "
             "/data/<volume name>, or a directory on it, /data/<volume name>/<directory>, "
-            "of A-Z a-z 0-9 _ . - without . or .., "
+            f"of A-Z a-z 0-9 _ . - without . or .., at most {_NFS_PATH_MAX} characters, "
             f"got '{shown(storage_path)}'"
         )
 
@@ -255,4 +249,5 @@ class FilterModule:
         return {
             "pulsar_amqp_settings": pulsar_amqp_settings,
             "pulsar_amqp_errors": pulsar_amqp_errors,
+            "pulsar_byoc_form": pulsar_byoc_form,
         }

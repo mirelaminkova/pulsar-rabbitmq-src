@@ -1,5 +1,6 @@
 ---
-# Integration: the deployed Pulsar, Slurm and storage. End to end: a job from Galaxy's client.
+# Integration: the deployed Pulsar, its credentials, Slurm and storage. End to end: a job from
+# Galaxy's client with the runner byoc-sync writes.
 - name: Verify the Pulsar workspace
   hosts: pulsar_workspace
   gather_facts: false
@@ -20,7 +21,7 @@
       register: _app_yml
       no_log: true
 
-    - name: Pulsar verifies Galaxy's certificate and hostname against the system CA bundle
+    - name: Pulsar verifies the broker's certificate and hostname against the system CA bundle
       vars:
         app: "{{ _app_yml.content | b64decode | from_yaml }}"
       ansible.builtin.assert:
@@ -29,7 +30,48 @@
           - app.amqp_connect_ssl_ca_certs == '/etc/ssl/certs/ca-certificates.crt'
           - app.amqp_connect_ssl_server_hostname == 'galaxy.molecule.test'
           - "'ssl' not in app.message_queue_url"
-          - app.managers._default_.type == 'queued_drmaa'
+          - app.managers.production.type == 'queued_drmaa'
+        quiet: true
+
+    # The given name and password were stored for reruns, root-only (tasks/credentials.yml).
+    - name: Find the stored BYOC credentials
+      ansible.builtin.stat:
+        path: "{{ pulsar_data }}/byoc.json"
+      register: _store
+
+    - name: Read the stored BYOC credentials
+      ansible.builtin.slurp:
+        src: "{{ pulsar_data }}/byoc.json"
+      register: _store_content
+      no_log: true
+
+    - name: The credentials are stored root-only and are the component parameters
+      vars:
+        stored: "{{ _store_content.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _store.stat.isreg
+          - _store.stat.pw_name == 'root'
+          - _store.stat.mode == '0600'
+          - stored.name == pulsar_amqp_name
+          - stored.password == pulsar_amqp_password
+          - stored | length == 2
+        quiet: true
+      no_log: true
+
+    - name: Find the container cache and its parents
+      ansible.builtin.stat:
+        path: "{{ pulsar_data }}/{{ item }}"
+      loop: [var, var/database, var/database/container_cache]
+      register: _cache_dirs
+
+    # Galaxy's SINGULARITY_CACHEDIR (byoc-sync's destination): the pulsar user's, in root's.
+    - name: The container cache is the pulsar user's inside root-owned directories
+      ansible.builtin.assert:
+        that:
+          - _cache_dirs.results | map(attribute='stat.isdir') | list == [true, true, true]
+          - _cache_dirs.results | map(attribute='stat.pw_name') | list == ['root', 'root', 'pulsar']
+          - _cache_dirs.results | map(attribute='stat.mode') | list == ['0755', '0755', '0750']
         quiet: true
 
     # The negative case: the same settings with another hostname than the certificate's
@@ -74,7 +116,7 @@
     - name: Find the mount of each data directory
       ansible.builtin.command:
         argv: [findmnt, --noheadings, --output, TARGET, --target, "{{ pulsar_data }}/{{ item }}"]
-      loop: [staging, persisted_data, home, job_tmp, slurmd, apptainer_cache, apptainer_tmp]
+      loop: [staging, persisted_data, home, job_tmp, slurmd, apptainer_cache, apptainer_tmp, var/database/container_cache]
       register: _mounts
       changed_when: false
 
@@ -109,15 +151,15 @@
       register: _connections
       changed_when: false
 
-    - name: Pulsar consumes pulsar__setup on its vhost, logged in as its user over TLS
+    - name: Pulsar consumes pulsar_production__setup on its vhost, logged in as its BYOC user over TLS
       ansible.builtin.assert:
         that:
-          - "'pulsar__setup' in _consumers.stdout_lines | map('trim') | list"
-          - "[pulsar.pulsar_amqp_name, vhost, 'true'] in _connections.stdout_lines | map('split') | list"
+          - "'pulsar_production__setup' in _consumers.stdout_lines | map('trim') | list"
+          - "[molecule_mq_user, vhost, 'true'] in _connections.stdout_lines | map('split') | list"
         fail_msg: "consumers: {{ _consumers.stdout_lines }}, connections: {{ _connections.stdout_lines }}"
 
-    # Galaxy's runner and destination for this Pulsar, from the Galaxy component's templates and
-    # the entry the welcome page derives from the component parameters (tests/e2e/galaxy_config.py).
+    # Galaxy's runner and destination for this Pulsar, from byoc-sync's templates and the
+    # component parameters (tests/e2e/galaxy_config.py); the password goes into the runner's URL.
     - name: Write the component parameters for Galaxy's job configuration
       ansible.builtin.copy:
         dest: "{{ ephemeral }}/pulsar_params.yml"
@@ -149,8 +191,6 @@
           - "{{ ephemeral }}/pulsar_params.yml"
           - "{{ molecule_galaxy_url }}"
         chdir: "{{ project }}"
-      environment:
-        GALAXY_AMQP_PASSWORD: "{{ molecule_galaxy_amqp_password }}"
       delegate_to: localhost
       register: _galaxy_job_config
       changed_when: false

@@ -1,7 +1,7 @@
 """Pulsar's jobs through a single-node Slurm with DRMAA (pulsar_job_runner), or locally.
 
-Galaxy sees none of this: its entry, the manager name and the queues stay the same
-for both runners (also tests/test_galaxy_contract.py).
+Galaxy sees none of this: the connection, the manager name and the queues stay the same
+for both runners (also tests/test_byoc_contract.py).
 """
 
 import os
@@ -61,11 +61,14 @@ def test_unknown_job_runner_is_an_error(value):
     assert value in errors[0]
 
 
-def test_galaxy_entry_does_not_depend_on_the_runner():
-    assert (
-        settings(job_runner="slurm")["galaxy_entry"] == settings(job_runner="local")["galaxy_entry"]
+def test_the_connection_does_not_depend_on_the_runner():
+    slurm, local = settings(job_runner="slurm"), settings(job_runner="local")
+
+    assert (slurm["url"], slurm["mq_user"], slurm["setup_queue"]) == (
+        local["url"],
+        local["mq_user"],
+        local["setup_queue"],
     )
-    assert "slurm" not in settings()["galaxy_entry"]
 
 
 def test_parameter_defaults_to_slurm():
@@ -84,7 +87,7 @@ def test_group_vars_report_a_wrong_runner():
 # --- app.yml -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("manager", ["_default_", "gpu"])
+@pytest.mark.parametrize("manager", ["production", "gpu"])
 def test_slurm_runner_uses_queued_drmaa_under_galaxys_manager_name(manager):
     app = render_yaml("pulsar-app.yml.j2", pulsar_manager=manager)
 
@@ -95,7 +98,7 @@ def test_local_runner_keeps_queued_python():
     app = render_yaml("pulsar-app.yml.j2", pulsar_job_runner="local")
 
     assert app["managers"] == {
-        "_default_": {
+        "production": {
             "type": "queued_python",
             "num_concurrent_jobs": 3,
             "min_polling_interval": 0.5,
@@ -131,7 +134,7 @@ def test_pulsar_builds_the_manager_from_our_app_yml(runner, manager_class, tmp_p
 
     [(name, proxy)] = build_managers(app, app_yml).items()
 
-    assert name == "_default_"
+    assert name == "production"
     assert type(proxy._proxied_manager) is manager_class
     assert proxy.min_polling_interval.total_seconds() == 0.5
     assert workers == ([3] if runner == "local" else [])

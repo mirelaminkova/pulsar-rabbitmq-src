@@ -1,8 +1,9 @@
 """Pulsar's data on SRC attached storage: the required pulsar_storage_path.
 
-Covers the parameter's validation and what is derived from it (Galaxy's jobs_directory,
-the directory layout, Docker's data-root), and the tasks and templates that use it. The
-volume check itself, files/check_storage.py, is tested in tests/test_check_storage.py.
+Covers the parameter's validation and what is derived from it (the form's nfs_path and
+Galaxy's jobs_directory, the directory layout, Docker's data-root), and the tasks and
+templates that use it. The volume check itself, files/check_storage.py, is tested in
+tests/test_check_storage.py.
 """
 
 import os
@@ -12,7 +13,6 @@ import subprocess
 import pytest
 
 from filter_plugins.pulsar_amqp import pulsar_amqp_errors
-from tests.galaxy_contract import src_galaxy
 from tests.helpers import (
     PARAMS,
     condition,
@@ -118,14 +118,7 @@ def test_storage_parameter_has_no_default():
     assert any("pulsar_storage_path is required" in error for error in errors)
 
 
-# --- Galaxy entry ----------------------------------------------------------------
-
-
-def parsed_entry(galaxy_entry):
-    entries = src_galaxy.src_config_list(galaxy_entry, "src_galaxy_pulsar_amqp_configs")
-    assert src_galaxy.pulsar_amqp_config_errors(entries) == []
-    [config] = src_galaxy.pulsar_amqp_configs(entries)
-    return config
+# --- The form's nfs_path ---------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -137,9 +130,14 @@ def parsed_entry(galaxy_entry):
         ("/data/volume_2/", "/data/volume_2/pulsar"),
     ],
 )
-def test_galaxy_parses_the_derived_jobs_directory(storage, expected):
-    result = resolve("_pulsar_amqp", pulsar_storage_path=storage)
-    assert parsed_entry(result["galaxy_entry"])["jobs_directory"] == f"{expected}/staging"
+def test_the_forms_nfs_path_is_the_storage_directory(storage, expected):
+    # byoc-sync derives Galaxy's jobs_directory (<nfs_path>/staging), persistence_directory
+    # and SINGULARITY_CACHEDIR from it (tests/test_byoc_contract.py).
+    form = resolve("_pulsar_byoc_form", pulsar_storage_path=storage)
+    assert form["nfs_path"] == expected
+    assert resolve("_pulsar_amqp", pulsar_storage_path=storage)["jobs_directory"] == (
+        f"{expected}/staging"
+    )
 
 
 # Everything that uses the storage path gets <mount point>/pulsar, never the mount point.
@@ -157,7 +155,7 @@ def test_a_mount_point_is_used_as_its_pulsar_directory_everywhere():
     create = task_named(STORAGE_TASKS, "Create the root-owned storage directory")
 
     assert f"<dd><code>{derived}</code>, staging <code>{derived}/staging</code></dd>" in page
-    assert f"jobs_directory: {derived}/staging" in page
+    assert f"<dt>nfs_path</dt>\n        <dd><code>{derived}</code></dd>" in page
     assert app["staging_directory"] == f"{derived}/staging"
     assert app["persistence_directory"] == f"{derived}/persisted_data"
     assert f" {derived}\n" in unit
@@ -172,13 +170,14 @@ def test_a_mount_point_is_used_as_its_pulsar_directory_everywhere():
         assert resolve(name, **mount).startswith(f"{derived}/")
 
 
-def test_welcome_page_entry_matches_app_yml_staging_directory():
+def test_welcome_page_form_matches_app_yml_staging_directory():
     page = render("welcome.html.j2", pulsar_storage_path="/data/vol/pulsar")
     app = render_yaml("pulsar-app.yml.j2", pulsar_storage_path="/data/vol/pulsar")
-    entry = resolve("_pulsar_amqp", pulsar_storage_path="/data/vol/pulsar")["galaxy_entry"]
+    form = resolve("_pulsar_byoc_form", pulsar_storage_path="/data/vol/pulsar")
 
-    assert "jobs_directory: /data/vol/pulsar/staging" in page
-    assert parsed_entry(entry)["jobs_directory"] == app["staging_directory"]
+    assert "<dd><code>/data/vol/pulsar</code></dd>" in page
+    assert form["nfs_path"] + "/staging" == app["staging_directory"]
+    assert form["nfs_path"] + "/persisted_data" == app["persistence_directory"]
 
 
 def test_welcome_page_shows_the_storage_and_the_staging_directory():
@@ -188,7 +187,7 @@ def test_welcome_page_shows_the_storage_and_the_staging_directory():
         in page
     )
     # The directory layout is the README's, not the page's.
-    for leaf in ("home", "persisted_data", "job_tmp", "apptainer_cache", "docker", "slurmd"):
+    for leaf in ("home", "persisted_data", "job_tmp", "apptainer_cache", "docker", "slurmd", "var"):
         assert f"/data/vol/pulsar/{leaf}" not in page
 
 
@@ -203,12 +202,29 @@ LAYOUT = {
     "pulsar_job_tmp_dir": f"{STORAGE}/job_tmp",
     "pulsar_home": f"{STORAGE}/home",
     "pulsar_slurmd_spool_dir": f"{STORAGE}/slurmd",
+    # Galaxy's SINGULARITY_CACHEDIR for this Pulsar (byoc-sync's destination).
+    "pulsar_container_cache_dir": f"{STORAGE}/var/database/container_cache",
+    "pulsar_byoc_store": f"{STORAGE}/byoc.json",
 }
 
 
 @pytest.mark.parametrize(("name", "path"), LAYOUT.items())
 def test_data_lives_on_the_storage(name, path):
     assert resolve(name) == path
+
+
+def test_container_cache_is_pulsars_inside_root_owned_parents():
+    # byoc-sync's destination sets SINGULARITY_CACHEDIR to <nfs_path>/var/database/container_cache.
+    cache = f"{STORAGE}/var/database/container_cache"
+    owned = resolve("_pulsar_owned_dirs")
+    root_owned = task_named(PULSAR_TASKS, "Create root-owned Pulsar directories")["loop"]
+
+    assert cache in owned
+    assert cache in resolve("_pulsar_owned_dirs", pulsar_apptainer="false")
+    assert [resolve_text(path) for path in root_owned][-2:] == [
+        f"{STORAGE}/var",
+        f"{STORAGE}/var/database",
+    ]
 
 
 def test_installation_and_configuration_stay_off_the_storage():
@@ -342,7 +358,9 @@ def test_check_script_is_installed_for_the_units():
     assert module["src"] == "files/check_storage.py"
     assert resolve_text(module["dest"]) == "/usr/local/libexec/pulsar-src/check_storage.py"
     assert (module["owner"], module["mode"]) == ("root", "0755")
-    directory = task_named(STORAGE_TASKS, "Create the root-only directory of the storage check")
+    directory = task_named(
+        STORAGE_TASKS, "Create the root-owned directory of this component's scripts"
+    )
     directory = directory["ansible.builtin.file"]
     assert resolve_text(directory["path"]) == "/usr/local/libexec/pulsar-src"
     assert (directory["owner"], directory["mode"], directory["follow"]) == ("root", "0755", False)

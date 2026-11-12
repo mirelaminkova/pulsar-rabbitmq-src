@@ -1,6 +1,8 @@
-"""Check that Pulsar logged in to the RabbitMQ broker and consumes its setup queue.
+"""Check that Pulsar logged in to the Galaxy's RabbitMQ broker and consumes its setup queue.
 
-The broker is the Galaxy workspace, or pulsar_amqp_host (usegalaxy.eu's mq.galaxyproject.eu).
+The broker is pulsar_amqp_host (usegalaxy.eu's mq.galaxyproject.eu), the login this
+Pulsar's BYOC user galaxy_<name>_byoc, created by the byoc-sync pipeline from the
+byoc_pulsar form of the user's Galaxy preferences.
 
 Usage (with Pulsar's venv Python): check_amqp.py APP_YML
 
@@ -30,6 +32,8 @@ OK, FAILED, RETRY = 0, 1, 75
 # Only the settings needed to connect: with persistence_directory and amqp_acknowledge
 # Pulsar's exchange would create acknowledgement stores, here as root.
 CONNECT_PREFIXES = ("amqp_connect_ssl_", "amqp_key_prefix")
+# Where the user enters the BYOC name and password that byoc-sync acts on.
+FORM = "the byoc_pulsar form of the Galaxy preferences"
 
 
 def manager_name(conf):
@@ -55,7 +59,7 @@ def check(conf):
     where = {
         "address": f"{url.hostname}:{url.port}",
         "host": url.hostname,
-        # The name the certificate is checked for: pulsar_amqp_host, or the Galaxy host.
+        # The name the certificate is checked for: pulsar_amqp_host.
         "server_hostname": conf.get("amqp_connect_ssl_server_hostname") or url.hostname,
         "user": url.username,
         "vhost": url.path[1:],
@@ -81,32 +85,29 @@ def explain(error, where):
     if isinstance(error, ssl.SSLCertVerificationError):
         return FAILED, (
             "The TLS certificate of {address} was rejected ({reason}). The certificate must be "
-            "for the broker's hostname {server_hostname} (pulsar_amqp_host, or "
-            "pulsar_galaxy_fqdn when it is empty)."
+            "for the broker's hostname {server_hostname} (pulsar_amqp_host)."
         ).format(reason=error.verify_message or error.reason, **where)
     if isinstance(error, ssl.SSLError):
         return (
             FAILED,
             f"TLS with {where['address']} failed ({error.reason}): "
-            "is pulsar_amqp_port Galaxy's AMQPS port?",
+            "is pulsar_amqp_port the broker's AMQPS port?",
         )
     if isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN:
         return RETRY, f"Resolving {where['host']} failed temporarily ({error.strerror})."
     if isinstance(error, socket.gaierror):
-        return FAILED, (
-            f"Cannot resolve {where['host']}: check pulsar_amqp_host, or pulsar_galaxy_fqdn "
-            "when it is empty."
-        )
+        return FAILED, f"Cannot resolve {where['host']}: check pulsar_amqp_host."
     if isinstance(error, amqp_exceptions.AccessRefused):
         return FAILED, (
-            "RabbitMQ on {address} refused the login of user {user}: pulsar_amqp_name and "
-            "pulsar_amqp_password must match this Pulsar's entry in Galaxy's "
-            "src_galaxy_pulsar_amqp_configs, and the Galaxy component must have run with it."
+            "RabbitMQ on {address} refused the login of user {user}: this Pulsar's name and "
+            "password (pulsar_amqp_name and pulsar_amqp_password, or the generated ones on the "
+            "welcome page) must be the ones entered in " + FORM + ", and byoc-sync's pull "
+            "request for them must have been merged and deployed."
         ).format(**where)
     if isinstance(error, amqp_exceptions.NotAllowed):
         return FAILED, (
-            "User {user} may not use vhost {vhost} on {address}: check pulsar_amqp_name against "
-            "Galaxy's src_galaxy_pulsar_amqp_configs."
+            "User {user} may not use vhost {vhost} on {address}: byoc-sync creates both from "
+            "the username in " + FORM + "; check pulsar_amqp_name against it."
         ).format(**where)
     if isinstance(error, amqp_exceptions.NotFound):
         return RETRY, (
@@ -115,9 +116,8 @@ def explain(error, where):
         ).format(**where)
     if isinstance(error, (OSError, amqp_exceptions.ConnectionError)):
         return RETRY, (
-            "Cannot reach RabbitMQ on {address} ({kind}): the broker's security group must "
-            "allow this workspace on that port (a Galaxy workspace also needs "
-            "src_galaxy_rabbitmq: true)."
+            "Cannot reach RabbitMQ on {address} ({kind}): the broker must allow this workspace "
+            "on that port (its firewall or security group)."
         ).format(kind=type(error).__name__, **where)
     return (
         FAILED,

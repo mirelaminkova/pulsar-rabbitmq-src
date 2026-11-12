@@ -37,7 +37,8 @@
     mode: '0755'
     follow: false
 
-- name: Create the root-only directory of the storage check
+# Also in check mode: the BYOC credentials helper (tasks/credentials.yml) runs from here then.
+- name: Create the root-owned directory of this component's scripts
   ansible.builtin.file:
     path: "{{ pulsar_storage_check_script | dirname }}"
     state: directory
@@ -45,6 +46,7 @@
     group: root
     mode: '0755'
     follow: false
+  check_mode: false
 
 - name: Install the storage check for the start of Pulsar, Docker and slurmd
   ansible.builtin.copy:

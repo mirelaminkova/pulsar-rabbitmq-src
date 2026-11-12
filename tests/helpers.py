@@ -15,7 +15,7 @@ from ansible.template import Templar
 from filter_plugins.pulsar_amqp import pulsar_amqp_settings
 
 REPO = Path(__file__).resolve().parents[1]
-GALAXY_CONTRACT = REPO / "tests" / "galaxy_contract"
+BYOC_CONTRACT = REPO / "tests" / "byoc_contract"
 
 add_all_plugin_dirs(str(REPO))
 
@@ -37,18 +37,22 @@ FACTS = {
     "omit": "__omit_place_holder__test",
 }
 
-PASSWORD = "Secret.Pass_word~123"  # noqa: S105 - test value
+PASSWORD = "Hpc0Secret1Password2Xyz3"  # noqa: S105 - test value, 24 letters and digits
+# The names byoc-sync derives from the BYOC name "hpc" (tests/byoc_contract/naming.py).
+MQ_USER = "galaxy_hpc_byoc"
+VHOST = "/pulsar/galaxy_hpc_byoc"
 # Component parameters as SRC passes them: strings, empty when unset.
 PARAMS = {
-    "pulsar_galaxy_fqdn": "galaxy.example.org",
+    "pulsar_amqp_host": "mq.example.org",
     "pulsar_amqp_port": "5671",
     "pulsar_amqp_name": "hpc",
     "pulsar_amqp_password": PASSWORD,
-    "pulsar_manager": "_default_",
+    "pulsar_manager": "production",
     "pulsar_storage_path": "/data/pulsar_storage/pulsar",
     "pulsar_cvmfs": "true",
     "pulsar_job_runner": "slurm",
 }
+URL = f"pyamqp://{MQ_USER}:{PASSWORD}@mq.example.org:5671/{VHOST}"
 
 
 def facts(**overrides):
@@ -115,7 +119,7 @@ def condition(expression, **variables):
 
 # The filter's parameters (not group_vars') for a valid Pulsar.
 BASE = {
-    "galaxy_fqdn": PARAMS["pulsar_galaxy_fqdn"],
+    "host": PARAMS["pulsar_amqp_host"],
     "port": PARAMS["pulsar_amqp_port"],
     "name": PARAMS["pulsar_amqp_name"],
     "password": PARAMS["pulsar_amqp_password"],

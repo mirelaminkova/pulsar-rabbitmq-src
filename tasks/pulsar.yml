@@ -1,6 +1,7 @@
 ---
-# Pulsar as an AMQP client of the Galaxy component's RabbitMQ, webless, modelled on
-# usegalaxy-eu/pulsar-nemo-login-role with systemd instead of supervisord.
+# Pulsar as an AMQP client of the Galaxy's RabbitMQ (a BYOC endpoint for byoc-sync),
+# webless, modelled on usegalaxy-eu/pulsar-nemo-login-role with systemd instead of
+# supervisord.
 - name: Install Python venv support for Pulsar
   ansible.builtin.apt:
     name: [python3-venv, python3-dev, build-essential, ca-certificates]
@@ -34,6 +35,9 @@
   loop:
     - "{{ pulsar_venv | dirname }}"
     - "{{ pulsar_config_dir }}"
+    # The parents of the container cache (byoc-sync's SINGULARITY_CACHEDIR layout).
+    - "{{ pulsar_container_cache_dir | dirname | dirname }}"
+    - "{{ pulsar_container_cache_dir | dirname }}"
 
 # A volume from an earlier workspace (or a rerun after the user was recreated) holds
 # files of another pulsar uid or gid (root's files stay root's). Before the directories

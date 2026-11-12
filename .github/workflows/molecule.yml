@@ -1,8 +1,9 @@
 ---
 # Integration and end-to-end tests (molecule/default): the playbook converges on an SRC test
-# workspace (Ubuntu 24.04 and 22.04) against the Galaxy component's RabbitMQ with TLS on a
-# second one, with pulsar_job_runner slurm and the storage on a separate ext4 volume; then
-# Galaxy's client (tests/e2e/) runs a job through the broker, Slurm and HTTP staging.
+# workspace (Ubuntu 24.04 and 22.04) against a Galaxy's RabbitMQ with TLS on a second one
+# (with the BYOC user byoc-sync would create), with pulsar_job_runner slurm and the storage
+# on a separate ext4 volume; then Galaxy's client (tests/e2e/) runs a job through the broker,
+# Slurm and HTTP staging with the runner byoc-sync writes.
 name: Molecule
 on:
   pull_request:

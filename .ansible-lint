@@ -3,5 +3,5 @@
 profile: production
 exclude_paths:
   - .github
-  - .galaxy-amqp/
-  - tests/galaxy_contract/
+  - .byoc-sync/
+  - tests/byoc_contract/

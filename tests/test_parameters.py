@@ -1,44 +1,32 @@
-"""Component parameters: defaults, validation and the Galaxy entry they produce.
+"""Component parameters: defaults, validation and the BYOC names they produce.
 
-Validation must accept exactly what Galaxy's parser accepts for the same values
-(vendored in tests/galaxy_contract/src_galaxy.py), so a deployment that passes
-here cannot be rejected by the Galaxy component, and vice versa, apart from the
-documented stricter rule for the Galaxy hostname. The storage path (and the
-jobs_directory derived from it) is tested in tests/test_storage.py.
+The BYOC name and password are validated with byoc-sync's rules (vendored in
+tests/byoc_contract/validate.py; tests/test_byoc_contract.py checks that both accept the same
+values), so a deployment that passes here cannot be rejected by the byoc-sync pipeline. The
+storage path (and the jobs_directory derived from it) is tested in tests/test_storage.py.
 """
 
 import pytest
 
-from filter_plugins.pulsar_amqp import pulsar_amqp_errors
-from tests.galaxy_contract import src_galaxy
-from tests.helpers import PASSWORD, resolve, settings
-
-
-def galaxy_errors(entry_text):
-    entries = src_galaxy.src_config_list(entry_text, "src_galaxy_pulsar_amqp_configs")
-    return src_galaxy.pulsar_amqp_config_errors(entries)
-
+from filter_plugins.pulsar_amqp import pulsar_amqp_errors, pulsar_byoc_form
+from tests.helpers import MQ_USER, PASSWORD, URL, VHOST, resolve, settings
 
 # Defaults
 
 
-def test_unset_parameters_get_galaxys_defaults():
+def test_unset_parameters_get_usegalaxy_eus_defaults():
     # SRC passes an unset parameter as an empty string.
-    result = settings(port="", manager="")
+    result = settings(host="", port="", manager="", ack_republish_time="")
 
+    assert result["host"] == "mq.galaxyproject.eu"
     assert result["port"] == 5671
-    assert result["manager"] == src_galaxy.AMQP_DEFAULTS["manager"]
+    assert result["manager"] == "production"
+    assert result["ack_republish_time"] == 300
     assert pulsar_amqp_errors(result) == []
 
 
 def test_empty_optional_parameters_get_defaults():
-    result = settings(
-        port="",
-        manager="",
-        docker_enabled="",
-        singularity_enabled="",
-        cvmfs="",
-    )
+    result = settings(docker_enabled="", singularity_enabled="", cvmfs="")
 
     assert pulsar_amqp_errors(result) == []
     assert result["docker_enabled"] is False
@@ -46,64 +34,53 @@ def test_empty_optional_parameters_get_defaults():
     assert result["cvmfs"] is True
 
 
-def test_derived_names_follow_galaxy():
-    result = settings(name="eu-hpc")
+# The names byoc-sync derives from the BYOC name
 
-    [config] = src_galaxy.pulsar_amqp_configs([{"name": "eu-hpc"}])
-    assert result["vhost"] == config["vhost"]
-    assert result["environment"] == config["environment"]
+
+def test_derived_names_follow_byoc_sync():
+    result = settings(name="alice01")
+
+    assert result["mq_user"] == "galaxy_alice01_byoc"
+    assert result["vhost"] == "/pulsar/galaxy_alice01_byoc"
+    assert result["setup_queue"] == "pulsar_production__setup"
 
 
 def test_url_has_no_ssl_query():
     # ?ssl=1 would replace Pulsar's amqp_connect_ssl_* settings (see test_pulsar_compat).
-    assert settings()["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
+    assert settings()["url"] == URL
+    assert "ssl" not in settings()["url"]
 
 
-def test_values_are_trimmed():
-    result = settings(galaxy_fqdn=" Galaxy.Example.org ", name=" hpc ")
-
-    assert result["galaxy_fqdn"] == "galaxy.example.org"
-    assert result["name"] == "hpc"
-
-
-# The broker host: Galaxy's host unless pulsar_amqp_host says otherwise.
-
-
-@pytest.mark.parametrize("value", ["", "  ", None])
-def test_broker_host_defaults_to_the_galaxy_host(value):
-    result = settings(host=value)
-
-    assert result["host"] == result["galaxy_fqdn"] == "galaxy.example.org"
-    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
-    assert pulsar_amqp_errors(result) == []
-
-
-def test_explicit_broker_host_is_used_in_the_url():
-    result = settings(host=" MQ.GalaxyProject.eu ")
+def test_values_are_trimmed_and_the_host_lowercased():
+    result = settings(host=" MQ.GalaxyProject.eu ", name=" hpc ")
 
     assert result["host"] == "mq.galaxyproject.eu"
-    assert result["galaxy_fqdn"] == "galaxy.example.org"
-    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/hpc"
+    assert result["name"] == "hpc"
+    assert result["url"] == f"pyamqp://{MQ_USER}:{PASSWORD}@mq.galaxyproject.eu:5671/{VHOST}"
+
+
+def test_the_old_entry_mode_is_gone():
+    result = settings()
+
+    assert "galaxy_fqdn" not in result
+    assert "galaxy_entry" not in result
+    assert "environment" not in result
+
+
+# Generated credentials: an empty name or password is not an error here (tasks/credentials.yml
+# generates or loads them after the storage is ready).
+
+
+@pytest.mark.parametrize("key", ["name", "password"])
+@pytest.mark.parametrize("value", ["", "  ", None])
+def test_an_empty_name_or_password_is_generated_later(key, value):
+    result = settings(**{key: value})
+
+    assert result[key] == ""
     assert pulsar_amqp_errors(result) == []
 
 
-def test_usegalaxy_eu_pulsar_network():
-    # usegalaxy.eu's runner URL is pyamqp://galaxy_<id>:<pw>@mq.galaxyproject.eu:5671
-    # //pulsar/galaxy_<id>?ssl=1 (infrastructure-playbook, job_conf.yml); our TLS
-    # settings replace ?ssl=1. Its runner uses manager production.
-    result = settings(
-        galaxy_fqdn="usegalaxy.eu",
-        host="mq.galaxyproject.eu",
-        name="galaxy_42",
-        manager="production",
-    )
-
-    assert result["url"] == (
-        f"pyamqp://galaxy_42:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/galaxy_42"
-    )
-    assert result["vhost"] == "/pulsar/galaxy_42"
-    assert result["setup_queue"] == "pulsar_production__setup"
-    assert pulsar_amqp_errors(result) == []
+# The broker host
 
 
 @pytest.mark.parametrize(
@@ -122,12 +99,11 @@ def test_broker_host_must_be_a_hostname(value):
 
     assert len(errors) == 1, errors
     assert "pulsar_amqp_host" in errors[0]
-    assert "pulsar_galaxy_fqdn" not in errors[0]
     assert PASSWORD.lower() not in errors[0].lower()
 
 
 # The README shows usegalaxy.eu's runner URL; pasted into a field, it holds the password.
-RUNNER_URL = f"pyamqp://galaxy_42:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/galaxy_42?ssl=1"
+RUNNER_URL = f"pyamqp://{MQ_USER}:{PASSWORD}@mq.galaxyproject.eu:5671/{VHOST}?ssl=1"
 
 
 @pytest.mark.parametrize(
@@ -135,18 +111,25 @@ RUNNER_URL = f"pyamqp://galaxy_42:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/ga
     [
         RUNNER_URL,
         RUNNER_URL.replace("@", "%40"),
-        f"galaxy_42:{PASSWORD}",
+        f"{MQ_USER}:{PASSWORD}",
         PASSWORD,  # the password in the wrong field
         f"mq.galaxyproject.eu\n{PASSWORD}",
     ],
     ids=["url", "url-percent-encoded", "login", "password", "newline"],
 )
-@pytest.mark.parametrize(
-    "key",
-    ["host", "galaxy_fqdn", "port", "name", "manager", "storage_path", "job_runner", "cvmfs"],
-)
+@pytest.mark.parametrize("key", ["host", "port", "name", "storage_path", "job_runner", "cvmfs"])
 def test_a_pasted_password_is_never_echoed(key, value):
     errors = pulsar_amqp_errors(settings(**{key: value}))
+
+    assert len(errors) == 1, errors
+    assert "the password" in errors[0]
+    assert PASSWORD.lower() not in errors[0].lower()
+
+
+@pytest.mark.parametrize("value", [RUNNER_URL, f"{MQ_USER}:{PASSWORD}"], ids=["url", "login"])
+def test_a_pasted_url_is_never_echoed_as_the_manager(value):
+    # A bare password is a valid manager name (letters and digits), so only these fail.
+    errors = pulsar_amqp_errors(settings(manager=value))
 
     assert len(errors) == 1, errors
     assert "the password" in errors[0]
@@ -158,7 +141,7 @@ def test_a_pasted_url_is_never_echoed_as_the_republish_time():
 
     assert len(errors) == 1, errors
     assert PASSWORD.lower() not in errors[0].lower()
-    assert "galaxy_42" not in errors[0]
+    assert MQ_USER not in errors[0]
 
 
 @pytest.mark.parametrize("key", ["port", "ack_republish_time"])
@@ -169,28 +152,21 @@ def test_a_huge_number_is_an_error_not_a_crash(key):
     assert len(errors) == 1, errors
 
 
-def test_an_invalid_galaxy_host_is_reported_once_when_it_is_the_broker_host():
-    errors = pulsar_amqp_errors(settings(galaxy_fqdn="galaxy", host=""))
-
-    assert len(errors) == 1, errors
-    assert "pulsar_galaxy_fqdn" in errors[0]
+# amqp_ack_republish_time: 300 s in byoc-sync's runner.
 
 
-# amqp_ack_republish_time: 1200 s in our Galaxy component, 300 s in usegalaxy.eu's runner.
-
-
-@pytest.mark.parametrize("value", ["", None, "1200"])
-def test_ack_republish_time_defaults_to_galaxys(value):
+@pytest.mark.parametrize("value", ["", None, "300"])
+def test_ack_republish_time_defaults_to_byoc_syncs(value):
     result = settings(ack_republish_time=value)
 
-    assert result["ack_republish_time"] == 1200
+    assert result["ack_republish_time"] == 300
     assert pulsar_amqp_errors(result) == []
 
 
-def test_ack_republish_time_can_be_usegalaxy_eus():
-    result = settings(ack_republish_time=" 300 ")
+def test_ack_republish_time_can_be_changed():
+    result = settings(ack_republish_time=" 1200 ")
 
-    assert result["ack_republish_time"] == 300
+    assert result["ack_republish_time"] == 1200
     assert pulsar_amqp_errors(result) == []
 
 
@@ -218,38 +194,24 @@ def test_valid():
 
 
 def test_required_values():
-    errors = pulsar_amqp_errors(settings(galaxy_fqdn="", name="", password="", storage_path=""))
+    errors = pulsar_amqp_errors(settings(host="", storage_path=""))
 
-    assert len(errors) == 4, errors
-    assert all("required" in error for error in errors), errors
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "https://galaxy.example.org",
-        "galaxy.example.org/",
-        "galaxy",
-        "galaxy.example.org:5671",
-        "-x.example.org",
-        "a b.example.org",
-    ],
-)
-def test_galaxy_fqdn_must_be_a_hostname(value):
-    assert_invalid("pulsar_galaxy_fqdn", galaxy_fqdn=value)
+    assert len(errors) == 1, errors
+    assert "pulsar_storage_path is required" in errors[0]
 
 
 @pytest.mark.parametrize(
     "value",
-    # Galaxy also refuses the ports RabbitMQ, Nginx and Galaxy use themselves.
-    ["0", "65536", "56x", "-1", "5671.0", "5672", "4369", "25672", "80", "443", "8080"],
+    # Galaxy's broker port: any port, but a port.
+    ["0", "65536", "56x", "-1", "5671.0"],
 )
 def test_invalid_port(value):
     assert_invalid("pulsar_amqp_port", port=value)
 
 
-def test_port():
-    assert pulsar_amqp_errors(settings(port="15671")) == []
+@pytest.mark.parametrize("value", ["15671", "5672"])
+def test_port(value):
+    assert pulsar_amqp_errors(settings(port=value)) == []
 
 
 @pytest.mark.parametrize("value", ["\u00b2", "\uff15\uff16\uff17\uff11"])
@@ -258,14 +220,80 @@ def test_only_ascii_digits_make_a_port(value):
     assert_invalid("pulsar_amqp_port", port=value)
 
 
-@pytest.mark.parametrize(
-    "value",
-    ["short", "has space in it", "with,comma1234", "quote'1234567890", "colon:1234567890"],
-)
-def test_password_is_never_echoed(value):
-    errors = pulsar_amqp_errors(settings(password=value))
+# byoc-sync's rules (validate.py): NAME_RE, no trailing _, no _byoc suffix, no __.
+VALID_NAMES = ["hpc", "alice01", "eu_hpc_2", "abc", "a" * 32, "srcdeadbeef"]
+INVALID_NAMES = [
+    "ab",  # too short
+    "a" * 33,
+    "HPC",
+    "1abc",
+    "_abc",
+    "hp c",
+    "eu-hpc",
+    "hpc.1",
+    "hpc_",  # ends with _
+    "a1_",
+    "hpc_byoc",  # the suffix byoc-sync adds
+    "hp__c",  # a double underscore
+    "galaxy_hpc_byoc",  # the RabbitMQ user, not the name
+]
+
+
+@pytest.mark.parametrize("value", VALID_NAMES)
+def test_valid_names(value):
+    assert pulsar_amqp_errors(settings(name=value)) == []
+
+
+@pytest.mark.parametrize("value", INVALID_NAMES)
+def test_invalid_names_are_refused(value):
+    errors = pulsar_amqp_errors(settings(name=value))
+
     assert len(errors) == 1, errors
+    assert "pulsar_amqp_name" in errors[0]
+    assert value in errors[0]
+
+
+# byoc-sync's rule (validate.py): PASSWORD_RE, 10 to 128 letters and digits.
+VALID_PASSWORDS = [PASSWORD, "a" * 10, "A1b2C3d4E5", "z" * 128]
+INVALID_PASSWORDS = [
+    "short",
+    "a" * 9,
+    "a" * 129,
+    "has space in it",
+    "with,comma1234",
+    "quote'1234567890",
+    "colon:1234567890",
+    "Secret.Pass_word~123",  # punctuation
+    "abc@defghijkl",
+]
+
+
+@pytest.mark.parametrize("value", VALID_PASSWORDS)
+def test_valid_passwords(value):
+    assert pulsar_amqp_errors(settings(password=value)) == []
+
+
+@pytest.mark.parametrize("value", INVALID_PASSWORDS)
+def test_invalid_passwords_are_refused_and_never_echoed(value):
+    errors = pulsar_amqp_errors(settings(password=value))
+
+    assert len(errors) == 1, errors
+    assert "pulsar_amqp_password" in errors[0]
     assert value not in " ".join(errors)
+    assert "letters and digits" in errors[0]
+
+
+@pytest.mark.parametrize("value", ["gpu", "Big-Queue_1", "_default_"])
+def test_manager_names(value):
+    result = settings(manager=value)
+
+    assert result["manager"] == value
+    assert pulsar_amqp_errors(result) == []
+
+
+@pytest.mark.parametrize("value", ["a.b", "true", "with space"])
+def test_invalid_manager_names(value):
+    assert_invalid("pulsar_manager", manager=value)
 
 
 @pytest.mark.parametrize(
@@ -286,102 +314,37 @@ def test_booleans():
     assert_invalid("docker", docker_enabled="maybe")
 
 
-# For name, password and manager: valid here <=> Galaxy accepts our entry.
-SAME_RULES_AS_GALAXY = {
-    "name": [
-        "hpc",
-        "eu_hpc-2",
-        "a" * 64,
-        "a" * 65,
-        "HPC",
-        "hp c",
-        "galaxy",
-        "guest",
-        "true",
-        "false",
-        "hpc.1",
-    ],
-    "password": [
-        PASSWORD,
-        "abcdefghijkl",
-        "abcdefghijk",
-        "a~b.c_d-e123",
-        "abc+defghijkl",
-        "abc@defghijkl",
-        "abc/defghijkl",
-        "true" * 3,
-        "x" * 200,
-    ],
-    "manager": ["_default_", "gpu", "Big-Queue_1", "a.b", "true", "with space"],
-}
+# The BYOC form (the welcome page shows it; byoc-sync reads it from Galaxy's preferences)
+
+
+def test_byoc_form_fields():
+    form = pulsar_byoc_form(settings(), 8, 32000)
+
+    assert form == {
+        "username": "hpc",
+        "max_accepted_cores": 8,
+        # int(0.9 * memory MB / 1024), as the pulsar-byoc playbook's connection summary.
+        "max_accepted_mem": 28,
+        "min_accepted_gpus": 0,
+        "max_accepted_gpus": 0,
+        "nfs_path": "/data/pulsar_storage/pulsar",
+    }
+    assert PASSWORD not in str(form)
 
 
 @pytest.mark.parametrize(
-    ("key", "value"),
+    ("cpus", "memory_mb", "cores", "mem"),
     [
-        pytest.param(key, value, id=f"{key}-{value if len(value) <= 20 else f'{len(value)}chars'}")
-        for key, values in SAME_RULES_AS_GALAXY.items()
-        for value in values
+        (1, 1024, 1, 1),  # a tiny workspace: byoc-sync needs at least 0.1 GB
+        (4, 16000, 4, 14),
+        (" 4 ", "16000", 4, 14),  # facts as strings
+        (64, 262144, 64, 230),
     ],
 )
-def test_rules_match_galaxys_parser(key, value):
-    result = settings(**{key: value})
-    ours = [e for e in pulsar_amqp_errors(result) if key in e or "required" in e]
-    theirs = galaxy_errors(result["galaxy_entry"])
-    assert (ours == []) == (theirs == []), (ours, theirs)
+def test_byoc_form_limits_follow_the_workspace(cpus, memory_mb, cores, mem):
+    form = pulsar_byoc_form(settings(), cpus, memory_mb)
 
-
-# The Galaxy entry
-
-
-def parsed(result):
-    [entry] = src_galaxy.src_config_list(result["galaxy_entry"], "src_galaxy_pulsar_amqp_configs")
-    return entry
-
-
-def test_galaxy_parses_the_entry_without_errors():
-    result = settings()
-
-    assert galaxy_errors(result["galaxy_entry"]) == []
-    assert set(parsed(result)) <= src_galaxy.AMQP_KEYS
-
-
-def test_galaxy_derives_the_same_connection():
-    result = settings(
-        manager="gpu",
-        storage_path="/data/volume_2/pulsar",
-        docker_enabled="false",
-        singularity_enabled="true",
-    )
-    [config] = src_galaxy.pulsar_amqp_configs([parsed(result)])
-
-    assert config["name"] == "hpc"
-    assert config["password"] == PASSWORD
-    assert config["vhost"] == result["vhost"]
-    assert config["manager"] == "gpu"
-    assert config["jobs_directory"] == "/data/volume_2/pulsar/staging"
-    assert config["singularity_enabled"] is True
-    assert config["docker_enabled"] is False
-
-
-# With both, Galaxy would prefer Docker; Apptainer runs unprivileged.
-@pytest.mark.parametrize(
-    ("docker", "singularity", "expected"),
-    [
-        ("true", "true", {"singularity_enabled"}),
-        ("true", "false", {"docker_enabled"}),
-        ("false", "true", {"singularity_enabled"}),
-        ("false", "false", set()),
-    ],
-    ids=["both-apptainer-wins", "docker", "apptainer", "none"],
-)
-def test_one_container_type(docker, singularity, expected):
-    entry = parsed(settings(docker_enabled=docker, singularity_enabled=singularity))
-    assert {key for key in entry if key.endswith("_enabled")} == expected
-
-
-def test_one_line():
-    assert "\n" not in settings()["galaxy_entry"]
+    assert (form["max_accepted_cores"], form["max_accepted_mem"]) == (cores, mem)
 
 
 # group_vars
@@ -390,21 +353,22 @@ def test_one_line():
 def test_group_vars_build_the_settings_from_the_component_parameters():
     result = resolve("_pulsar_amqp")
 
-    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@galaxy.example.org:5671//pulsar/hpc"
+    assert result["url"] == URL
+    assert result["mq_user"] == MQ_USER
+    assert result["vhost"] == VHOST
     assert result["jobs_directory"] == "/data/pulsar_storage/pulsar/staging"
     assert resolve("_pulsar_amqp_errors") == []
 
 
-def test_group_vars_pass_the_broker_host_and_republish_time():
+def test_group_vars_defaults_are_usegalaxy_eus():
     result = resolve(
-        "_pulsar_amqp", pulsar_amqp_host="mq.galaxyproject.eu", pulsar_amqp_ack_republish_time="300"
+        "_pulsar_amqp", pulsar_amqp_host="", pulsar_manager="", pulsar_amqp_ack_republish_time=""
     )
 
     assert result["host"] == "mq.galaxyproject.eu"
-    assert result["galaxy_fqdn"] == "galaxy.example.org"
-    assert result["url"] == f"pyamqp://hpc:{PASSWORD}@mq.galaxyproject.eu:5671//pulsar/hpc"
+    assert result["url"] == f"pyamqp://{MQ_USER}:{PASSWORD}@mq.galaxyproject.eu:5671/{VHOST}"
     assert result["ack_republish_time"] == 300
-    assert resolve("_pulsar_amqp_errors", pulsar_amqp_host="mq.galaxyproject.eu") == []
+    assert result["manager"] == "production"
 
 
 def test_group_vars_report_an_invalid_broker_host():
@@ -414,7 +378,32 @@ def test_group_vars_report_an_invalid_broker_host():
     assert "pulsar_amqp_host" in errors[0]
 
 
-def test_group_vars_report_missing_parameters():
-    errors = resolve("_pulsar_amqp_errors", pulsar_galaxy_fqdn="", pulsar_amqp_password="")
+def test_group_vars_report_invalid_credentials():
+    errors = resolve(
+        "_pulsar_amqp_errors",
+        pulsar_amqp_name="hpc_byoc",
+        pulsar_amqp_password="short",  # noqa: S106 - an invalid test value
+    )
 
     assert len(errors) == 2, errors
+    assert "short" not in " ".join(errors)
+
+
+def test_group_vars_keep_the_raw_parameters_for_the_credentials_task():
+    # tasks/credentials.yml rebuilds _pulsar_amqp from these with the resolved name and password.
+    params = resolve("_pulsar_amqp_params")
+
+    assert params["name"] == "hpc"
+    assert params["password"] == PASSWORD
+    assert resolve("_pulsar_amqp", _pulsar_amqp_params={**params, "name": "other"})["mq_user"] == (
+        "galaxy_other_byoc"
+    )
+
+
+def test_group_vars_build_the_byoc_form_from_the_facts():
+    form = resolve("_pulsar_byoc_form")
+
+    assert form["username"] == "hpc"
+    assert form["max_accepted_cores"] == 4
+    assert form["max_accepted_mem"] == 14
+    assert form["nfs_path"] == "/data/pulsar_storage/pulsar"
